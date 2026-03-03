@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Exception Dashboard</title>
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+<div id="exd-root">
+
+  <!-- Toolbar -->
+  <div id="exd-toolbar">
+    <div class="exd-control-group">
+      <label class="exd-label">Rules</label>
+      <div id="exd-rule-picker" class="exd-multi-select">
+        <button type="button" class="exd-ms-toggle" data-target="exd-rule-picker">Select rules...</button>
+        <div class="exd-ms-dropdown">
+          <input type="text" class="exd-ms-search" placeholder="Search rules...">
+          <label class="exd-ms-select-all"><input type="checkbox"> Select All</label>
+          <div class="exd-ms-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="exd-control-group">
+      <label class="exd-label">From</label>
+      <input type="date" id="exd-from" class="exd-input">
+    </div>
+
+    <div class="exd-control-group">
+      <label class="exd-label">To</label>
+      <input type="date" id="exd-to" class="exd-input">
+    </div>
+
+    <div class="exd-control-group">
+      <label class="exd-label">Group By</label>
+      <div class="exd-btn-group">
+        <button type="button" class="exd-gran-btn active" data-gran="day">Day</button>
+        <button type="button" class="exd-gran-btn" data-gran="week">Week</button>
+        <button type="button" class="exd-gran-btn" data-gran="month">Month</button>
+      </div>
+    </div>
+
+    <div class="exd-control-group">
+      <label class="exd-label">View</label>
+      <div class="exd-btn-group">
+        <button type="button" class="exd-view-btn active" data-view="company">Company</button>
+        <button type="button" class="exd-view-btn" data-view="groups">Groups</button>
+      </div>
+    </div>
+
+    <div class="exd-control-group exd-group-picker-wrap" style="display:none">
+      <label class="exd-label">Groups</label>
+      <div id="exd-group-picker" class="exd-multi-select">
+        <button type="button" class="exd-ms-toggle" data-target="exd-group-picker">Select groups...</button>
+        <div class="exd-ms-dropdown">
+          <input type="text" class="exd-ms-search" placeholder="Search groups...">
+          <label class="exd-ms-select-all"><input type="checkbox"> Select All</label>
+          <div class="exd-ms-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="exd-control-group exd-control-actions">
+      <label class="exd-label">&nbsp;</label>
+      <button type="button" id="exd-generate" class="exd-btn-primary">Generate</button>
+    </div>
+
+    <span id="exd-status" class="exd-status-text"></span>
+  </div>
+
+  <!-- KPI Strip -->
+  <div id="exd-kpi-strip">
+    <div class="exd-kpi-card">
+      <div class="exd-kpi-value" id="exd-kpi-total">—</div>
+      <div class="exd-kpi-label">Total Events</div>
+    </div>
+    <div class="exd-kpi-card">
+      <div class="exd-kpi-value" id="exd-kpi-devices">—</div>
+      <div class="exd-kpi-label">Unique Devices</div>
+    </div>
+    <div class="exd-kpi-card">
+      <div class="exd-kpi-value" id="exd-kpi-period">—</div>
+      <div class="exd-kpi-label">Period</div>
+    </div>
+    <div class="exd-kpi-card">
+      <div class="exd-kpi-value" id="exd-kpi-rules">—</div>
+      <div class="exd-kpi-label">Rules Selected</div>
+    </div>
+  </div>
+
+  <!-- Content area -->
+  <div id="exd-content">
+
+    <!-- Chart Panel -->
+    <div id="exd-chart-panel">
+      <div class="exd-chart-wrapper">
+        <canvas id="exd-chart"></canvas>
+      </div>
+    </div>
+
+    <!-- Table Panel -->
+    <div id="exd-table-panel">
+      <div class="exd-panel-toolbar">
+        <input type="text" id="exd-table-search" class="exd-input" placeholder="Search...">
+        <button type="button" id="exd-export-csv" class="exd-btn-secondary">Export CSV</button>
+      </div>
+      <div class="exd-table-wrapper">
+        <table class="exd-table" id="exd-data-table">
+          <thead id="exd-table-head"></thead>
+          <tbody id="exd-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="exd-loading" style="display:none">
+      <div class="exd-loading-inner">
+        <div class="exd-spinner"></div>
+        <div class="exd-loading-text">Loading...</div>
+        <div class="exd-progress-bar"><div class="exd-progress-fill"></div></div>
+      </div>
+    </div>
+
+    <!-- Empty State -->
+    <div id="exd-empty" style="display:none">
+      <div class="exd-empty-inner">
+        <div class="exd-empty-icon">📊</div>
+        <div class="exd-empty-title">No exception events found</div>
+        <div class="exd-empty-text">Select rules and a date range, then click Generate.</div>
+      </div>
+    </div>
+
+    <!-- Warning Banner -->
+    <div id="exd-warning" style="display:none"></div>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

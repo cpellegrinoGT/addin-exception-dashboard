@@ -1,0 +1,501 @@
+/* Exception Dashboard — all selectors scoped under #exd-root */
+
+#exd-root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  color: #333;
+  box-sizing: border-box;
+}
+
+#exd-root *, #exd-root *::before, #exd-root *::after {
+  box-sizing: border-box;
+}
+
+/* ── Toolbar ── */
+
+#exd-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  padding: 12px 16px;
+  background: #f5f6f8;
+  border-bottom: 1px solid #ddd;
+}
+
+.exd-control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.exd-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #666;
+  letter-spacing: 0.3px;
+}
+
+.exd-input {
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #333;
+  background: #fff;
+  outline: none;
+}
+
+.exd-input:focus {
+  border-color: #4a90d9;
+  box-shadow: 0 0 0 2px rgba(74, 144, 217, 0.15);
+}
+
+.exd-btn-primary {
+  height: 34px;
+  padding: 0 20px;
+  border: none;
+  border-radius: 4px;
+  background: #4a90d9;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.exd-btn-primary:hover { background: #3a7bc8; }
+.exd-btn-primary:active { background: #2e66a8; }
+.exd-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.exd-btn-secondary {
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: #fff;
+  color: #333;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.exd-btn-secondary:hover { background: #f5f6f8; }
+
+.exd-status-text {
+  font-size: 12px;
+  color: #666;
+  align-self: center;
+  margin-left: auto;
+}
+
+/* ── Button groups (granularity, view toggle) ── */
+
+.exd-btn-group {
+  display: inline-flex;
+}
+
+.exd-btn-group button {
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid #ddd;
+  background: #fff;
+  color: #555;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.exd-btn-group button:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+.exd-btn-group button:last-child {
+  border-radius: 0 4px 4px 0;
+}
+
+.exd-btn-group button:not(:first-child) {
+  border-left: none;
+}
+
+.exd-btn-group button.active {
+  background: #4a90d9;
+  color: #fff;
+  border-color: #4a90d9;
+}
+
+.exd-btn-group button.active + button {
+  border-left-color: #4a90d9;
+}
+
+/* ── Multi-select dropdown ── */
+
+.exd-multi-select {
+  position: relative;
+  display: inline-block;
+}
+
+.exd-ms-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 34px;
+  min-width: 200px;
+  max-width: 320px;
+  padding: 0 10px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: #fff;
+  color: #333;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.exd-ms-toggle::after {
+  content: "\25BC";
+  font-size: 9px;
+  margin-left: 8px;
+  color: #999;
+  flex-shrink: 0;
+}
+
+.exd-ms-toggle:focus {
+  border-color: #4a90d9;
+  box-shadow: 0 0 0 2px rgba(74, 144, 217, 0.15);
+  outline: none;
+}
+
+.exd-ms-dropdown {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 100;
+  width: 280px;
+  max-height: 300px;
+  margin-top: 2px;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+}
+
+.exd-ms-dropdown.open {
+  display: flex;
+  flex-direction: column;
+}
+
+.exd-ms-search {
+  margin: 8px;
+  padding: 6px 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 13px;
+  outline: none;
+}
+
+.exd-ms-search:focus {
+  border-color: #4a90d9;
+}
+
+.exd-ms-select-all {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #555;
+  border-bottom: 1px solid #eee;
+  cursor: pointer;
+}
+
+.exd-ms-list {
+  overflow-y: auto;
+  max-height: 240px;
+  padding: 4px 0;
+}
+
+.exd-ms-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.exd-ms-item:hover {
+  background: #f0f5ff;
+}
+
+.exd-ms-item input[type="checkbox"] {
+  margin: 0;
+  flex-shrink: 0;
+}
+
+/* ── KPI Strip ── */
+
+#exd-kpi-strip {
+  display: flex;
+  gap: 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #eee;
+  background: #fff;
+}
+
+.exd-kpi-card {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  background: #f5f6f8;
+  border-radius: 6px;
+  text-align: center;
+}
+
+.exd-kpi-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.exd-kpi-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #666;
+  margin-top: 2px;
+  letter-spacing: 0.3px;
+}
+
+/* ── Content area ── */
+
+#exd-content {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+
+/* ── Chart Panel ── */
+
+#exd-chart-panel {
+  margin-bottom: 16px;
+}
+
+.exd-chart-wrapper {
+  position: relative;
+  height: 300px;
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 6px;
+  padding: 12px;
+}
+
+/* ── Table Panel ── */
+
+#exd-table-panel {
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.exd-panel-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #eee;
+}
+
+.exd-panel-toolbar .exd-input {
+  width: 220px;
+}
+
+.exd-panel-toolbar .exd-btn-secondary {
+  margin-left: auto;
+}
+
+.exd-table-wrapper {
+  max-height: calc(100vh - 500px);
+  overflow: auto;
+}
+
+.exd-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.exd-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.exd-table th {
+  padding: 8px 12px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  color: #666;
+  background: #f5f6f8;
+  border-bottom: 2px solid #ddd;
+  white-space: nowrap;
+  letter-spacing: 0.3px;
+}
+
+.exd-sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.exd-sortable:hover {
+  color: #4a90d9;
+}
+
+.exd-sort-arrow {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: 10px;
+  color: #bbb;
+}
+
+.exd-sort-asc .exd-sort-arrow::after {
+  content: "\25B2";
+  color: #4a90d9;
+}
+
+.exd-sort-desc .exd-sort-arrow::after {
+  content: "\25BC";
+  color: #4a90d9;
+}
+
+.exd-table td {
+  padding: 7px 12px;
+  border-bottom: 1px solid #eee;
+  color: #333;
+}
+
+.exd-table tbody tr:hover {
+  background: #f0f5ff;
+}
+
+.exd-table td.exd-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Loading overlay ── */
+
+#exd-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.exd-loading-inner {
+  text-align: center;
+}
+
+.exd-spinner {
+  width: 36px;
+  height: 36px;
+  margin: 0 auto 12px;
+  border: 4px solid #ddd;
+  border-top-color: #4a90d9;
+  border-radius: 50%;
+  animation: exd-spin 0.8s linear infinite;
+}
+
+@keyframes exd-spin {
+  to { transform: rotate(360deg); }
+}
+
+.exd-loading-text {
+  font-size: 13px;
+  color: #555;
+  margin-bottom: 8px;
+}
+
+.exd-progress-bar {
+  width: 200px;
+  height: 6px;
+  margin: 0 auto;
+  background: #eee;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.exd-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: #4a90d9;
+  border-radius: 3px;
+  transition: width 0.3s;
+}
+
+/* ── Empty state ── */
+
+#exd-empty {
+  position: absolute;
+  inset: 0;
+  z-index: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.exd-empty-inner {
+  text-align: center;
+  padding: 40px;
+}
+
+.exd-empty-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+
+.exd-empty-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 4px;
+}
+
+.exd-empty-text {
+  font-size: 13px;
+  color: #666;
+}
+
+/* ── Warning banner ── */
+
+#exd-warning {
+  padding: 10px 16px;
+  margin-bottom: 12px;
+  background: #fff3cd;
+  color: #856404;
+  border: 1px solid #ffeeba;
+  border-radius: 4px;
+  font-size: 13px;
+}

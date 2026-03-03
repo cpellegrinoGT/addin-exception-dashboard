@@ -1,0 +1,865 @@
+geotab.addin.exceptionDashboard = function () {
+  "use strict";
+
+  var api;
+  var abortController = null;
+  var chartInstance = null;
+
+  // Reference data
+  var allRules = [];
+  var allGroups = [];
+  var allDevices = [];
+  var deviceGroupMap = {}; // deviceId -> [groupId, ...]
+
+  // Current results
+  var currentRows = [];
+  var currentHeaders = [];
+  var sortState = { col: null, dir: "desc" };
+
+  // Multi-select instances
+  var rulePicker, groupPicker;
+
+  // DOM cache
+  var els = {};
+
+  // ─── Helpers ───
+
+  function $(id) { return document.getElementById(id); }
+
+  function delay(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
+  function formatDate(d) {
+    return d.getFullYear() + "-" +
+      String(d.getMonth() + 1).padStart(2, "0") + "-" +
+      String(d.getDate()).padStart(2, "0");
+  }
+
+  function parseLocalDate(str) {
+    var parts = str.split("-");
+    return new Date(+parts[0], +parts[1] - 1, +parts[2]);
+  }
+
+  function toISODate(d) {
+    return d.toISOString();
+  }
+
+  function isAborted() {
+    return abortController && abortController.signal && abortController.signal.aborted;
+  }
+
+  function apiCall(method, params) {
+    return new Promise(function (resolve, reject) {
+      api.call(method, params, resolve, reject);
+    });
+  }
+
+  function apiMultiCall(calls) {
+    return new Promise(function (resolve, reject) {
+      api.multiCall(calls, resolve, reject);
+    });
+  }
+
+  // ─── Multi-Select Widget ───
+
+  function initMultiSelect(cfg) {
+    var container = $(cfg.id);
+    var toggle = container.querySelector(".exd-ms-toggle");
+    var dropdown = container.querySelector(".exd-ms-dropdown");
+    var searchInput = container.querySelector(".exd-ms-search");
+    var selectAllCb = container.querySelector(".exd-ms-select-all input");
+    var listEl = container.querySelector(".exd-ms-list");
+
+    var items = [];
+    var selected = new Set();
+
+    function render(filter) {
+      var filt = (filter || "").toLowerCase();
+      listEl.innerHTML = "";
+      var visibleCount = 0;
+      var checkedCount = 0;
+      items.forEach(function (item) {
+        if (filt && item.label.toLowerCase().indexOf(filt) < 0) return;
+        visibleCount++;
+        var checked = selected.has(item.value);
+        if (checked) checkedCount++;
+        var label = document.createElement("label");
+        label.className = "exd-ms-item";
+        var cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = checked;
+        cb.addEventListener("change", function () {
+          if (cb.checked) selected.add(item.value);
+          else selected.delete(item.value);
+          updateToggleText();
+          updateSelectAll();
+        });
+        var span = document.createElement("span");
+        span.textContent = item.label;
+        label.appendChild(cb);
+        label.appendChild(span);
+        listEl.appendChild(label);
+      });
+      selectAllCb.checked = visibleCount > 0 && checkedCount === visibleCount;
+    }
+
+    function updateToggleText() {
+      if (selected.size === 0) {
+        toggle.textContent = cfg.placeholder || "Select...";
+      } else if (selected.size <= 2) {
+        var labels = [];
+        items.forEach(function (it) {
+          if (selected.has(it.value)) labels.push(it.label);
+        });
+        toggle.textContent = labels.join(", ");
+      } else {
+        toggle.textContent = selected.size + " selected";
+      }
+    }
+
+    function updateSelectAll() {
+      var filt = (searchInput.value || "").toLowerCase();
+      var visibleCount = 0;
+      var checkedCount = 0;
+      items.forEach(function (item) {
+        if (filt && item.label.toLowerCase().indexOf(filt) < 0) return;
+        visibleCount++;
+        if (selected.has(item.value)) checkedCount++;
+      });
+      selectAllCb.checked = visibleCount > 0 && checkedCount === visibleCount;
+    }
+
+    toggle.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var isOpen = dropdown.classList.contains("open");
+      closeAllDropdowns();
+      if (!isOpen) {
+        dropdown.classList.add("open");
+        searchInput.value = "";
+        render("");
+        searchInput.focus();
+      }
+    });
+
+    searchInput.addEventListener("input", function () {
+      render(searchInput.value);
+    });
+
+    searchInput.addEventListener("click", function (e) { e.stopPropagation(); });
+
+    selectAllCb.addEventListener("change", function () {
+      var filt = (searchInput.value || "").toLowerCase();
+      items.forEach(function (item) {
+        if (filt && item.label.toLowerCase().indexOf(filt) < 0) return;
+        if (selectAllCb.checked) selected.add(item.value);
+        else selected.delete(item.value);
+      });
+      render(searchInput.value);
+      updateToggleText();
+    });
+
+    dropdown.addEventListener("click", function (e) { e.stopPropagation(); });
+
+    return {
+      setItems: function (newItems) {
+        items = newItems.slice().sort(function (a, b) {
+          return a.label.localeCompare(b.label);
+        });
+        selected.clear();
+        updateToggleText();
+        render("");
+      },
+      getSelected: function () {
+        return Array.from(selected);
+      },
+      container: container,
+      dropdown: dropdown
+    };
+  }
+
+  function closeAllDropdowns() {
+    document.querySelectorAll("#exd-root .exd-ms-dropdown.open").forEach(function (d) {
+      d.classList.remove("open");
+    });
+  }
+
+  // ─── Loading / UI helpers ───
+
+  function showLoading(show, text) {
+    els.loading.style.display = show ? "flex" : "none";
+    if (text) els.loadingText.textContent = text;
+  }
+
+  function setProgress(pct) {
+    els.progressFill.style.width = Math.min(100, Math.round(pct)) + "%";
+  }
+
+  function showEmpty(show) {
+    els.empty.style.display = show ? "flex" : "none";
+  }
+
+  function showWarning(msg) {
+    if (msg) {
+      els.warning.textContent = msg;
+      els.warning.style.display = "block";
+    } else {
+      els.warning.style.display = "none";
+    }
+  }
+
+  function setStatus(text) {
+    els.status.textContent = text || "";
+  }
+
+  // ─── Reference Data Loading ───
+
+  function loadReferenceData() {
+    showLoading(true, "Loading rules, groups, and devices...");
+    setProgress(0);
+    return apiMultiCall([
+      ["Get", { typeName: "Rule", resultsLimit: 10000 }],
+      ["Get", { typeName: "Group", resultsLimit: 10000 }],
+      ["Get", { typeName: "Device", resultsLimit: 50000 }]
+    ]).then(function (results) {
+      allRules = results[0] || [];
+      allGroups = results[1] || [];
+      allDevices = results[2] || [];
+
+      // Build device-to-groups map
+      deviceGroupMap = {};
+      allDevices.forEach(function (d) {
+        if (d.groups && d.groups.length) {
+          deviceGroupMap[d.id] = d.groups.map(function (g) { return g.id; });
+        }
+      });
+
+      // Populate rule picker
+      var ruleItems = allRules
+        .filter(function (r) { return r.name && r.name !== ""; })
+        .map(function (r) {
+          return { value: r.id, label: r.name };
+        });
+      rulePicker.setItems(ruleItems);
+
+      // Populate group picker — filter to non-system groups
+      var systemGroupIds = new Set([
+        "GroupCompanyId", "GroupRootId", "GroupNothingId",
+        "GroupSecurityId", "GroupEverythingId", "GroupPrivateUserId"
+      ]);
+      var groupItems = allGroups
+        .filter(function (g) {
+          return g.name && !systemGroupIds.has(g.id) && g.id.indexOf("Group") !== 0;
+        })
+        .map(function (g) {
+          return { value: g.id, label: g.name };
+        });
+      groupPicker.setItems(groupItems);
+
+      showLoading(false);
+      setStatus(allRules.length + " rules loaded");
+    }).catch(function (err) {
+      showLoading(false);
+      setStatus("Error loading reference data: " + (err.message || err));
+      console.error("loadReferenceData error:", err);
+    });
+  }
+
+  // ─── Date Range Splitting ───
+
+  function splitDateRange(from, to, maxDays) {
+    var chunks = [];
+    var cursor = from.getTime();
+    var end = to.getTime();
+    var step = maxDays * 86400000;
+    while (cursor < end) {
+      var chunkEnd = Math.min(cursor + step, end);
+      chunks.push({ from: new Date(cursor), to: new Date(chunkEnd) });
+      cursor = chunkEnd;
+    }
+    return chunks;
+  }
+
+  // ─── Fetch Exception Events ───
+
+  function fetchExceptionEvents(ruleIds, fromDate, toDate, onProgress) {
+    var MAX_DAYS = 14;
+    var BATCH_SIZE = 20;
+    var RESULT_LIMIT = 50000;
+    var chunks = splitDateRange(fromDate, toDate, MAX_DAYS);
+
+    // Build calls: one Get per rule per chunk
+    var allCalls = [];
+    ruleIds.forEach(function (ruleId) {
+      chunks.forEach(function (chunk) {
+        allCalls.push(["Get", {
+          typeName: "ExceptionEvent",
+          search: {
+            fromDate: toISODate(chunk.from),
+            toDate: toISODate(chunk.to),
+            ruleSearch: { id: ruleId }
+          },
+          resultsLimit: RESULT_LIMIT
+        }]);
+      });
+    });
+
+    // Batch into groups of BATCH_SIZE for multiCall
+    var batches = [];
+    for (var i = 0; i < allCalls.length; i += BATCH_SIZE) {
+      batches.push(allCalls.slice(i, i + BATCH_SIZE));
+    }
+
+    var allEvents = [];
+    var completedBatches = 0;
+    var totalBatches = batches.length;
+    var hitLimit = false;
+
+    return batches.reduce(function (chain, batch, idx) {
+      return chain.then(function () {
+        if (isAborted()) return;
+        var pause = idx > 0 ? delay(200) : Promise.resolve();
+        return pause.then(function () {
+          if (isAborted()) return;
+          return apiMultiCall(batch).then(function (results) {
+            results.forEach(function (arr) {
+              if (arr && arr.length) {
+                if (arr.length >= RESULT_LIMIT) hitLimit = true;
+                allEvents = allEvents.concat(arr);
+              }
+            });
+            completedBatches++;
+            if (onProgress) onProgress(completedBatches / totalBatches * 100);
+          });
+        });
+      });
+    }, Promise.resolve()).then(function () {
+      return { events: allEvents, hitLimit: hitLimit };
+    });
+  }
+
+  // ─── Aggregation ───
+
+  function getBucketKey(dateStr, mode) {
+    var d = new Date(dateStr);
+    if (mode === "day") {
+      return formatDate(d);
+    } else if (mode === "week") {
+      // ISO week start (Monday)
+      var day = d.getDay();
+      var diff = d.getDate() - day + (day === 0 ? -6 : 1);
+      var monday = new Date(d);
+      monday.setDate(diff);
+      return "W" + formatDate(monday);
+    } else {
+      // month
+      return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+    }
+  }
+
+  function aggregateEvents(events, ruleIds, groupIds, mode, viewMode) {
+    var ruleIdSet = new Set(ruleIds);
+    var groupIdSet = groupIds ? new Set(groupIds) : null;
+    var bucketsMap = {}; // key -> { rule/group -> count }
+    var uniqueDevices = new Set();
+
+    events.forEach(function (evt) {
+      if (!evt.activeFrom) return;
+      var ruleId = evt.rule ? evt.rule.id : null;
+      if (!ruleId || !ruleIdSet.has(ruleId)) return;
+
+      var deviceId = evt.device ? evt.device.id : null;
+
+      if (viewMode === "groups" && groupIdSet) {
+        // In groups mode, attribute to each matching group
+        var devGroups = deviceId ? (deviceGroupMap[deviceId] || []) : [];
+        var matchedGroups = devGroups.filter(function (gid) { return groupIdSet.has(gid); });
+        if (matchedGroups.length === 0) return;
+        var key = getBucketKey(evt.activeFrom, mode);
+        if (!bucketsMap[key]) bucketsMap[key] = {};
+        matchedGroups.forEach(function (gid) {
+          if (!bucketsMap[key][gid]) bucketsMap[key][gid] = 0;
+          bucketsMap[key][gid]++;
+        });
+      } else {
+        // Company mode: aggregate by rule
+        var key = getBucketKey(evt.activeFrom, mode);
+        if (!bucketsMap[key]) bucketsMap[key] = {};
+        if (!bucketsMap[key][ruleId]) bucketsMap[key][ruleId] = 0;
+        bucketsMap[key][ruleId]++;
+      }
+
+      if (deviceId) uniqueDevices.add(deviceId);
+    });
+
+    var orderedKeys = Object.keys(bucketsMap).sort();
+
+    return {
+      orderedKeys: orderedKeys,
+      buckets: bucketsMap,
+      uniqueDeviceCount: uniqueDevices.size,
+      totalEvents: events.length
+    };
+  }
+
+  // ─── Chart Rendering ───
+
+  var CHART_COLORS = [
+    "#4a90d9", "#e74c3c", "#27ae60", "#f39c12", "#9b59b6",
+    "#1abc9c", "#e67e22", "#3498db", "#e91e63", "#00bcd4",
+    "#8bc34a", "#ff5722", "#607d8b", "#795548", "#cddc39"
+  ];
+
+  function buildChartData(orderedKeys, buckets, mode, seriesIds, seriesLabels) {
+    var labels = orderedKeys.map(function (k) {
+      if (mode === "week") return k; // "W2026-01-05"
+      if (mode === "month") return k; // "2026-01"
+      return k; // "2026-01-05"
+    });
+
+    var datasets = [];
+
+    // One bar dataset per series (rule or group)
+    seriesIds.forEach(function (sid, idx) {
+      var data = orderedKeys.map(function (key) {
+        return (buckets[key] && buckets[key][sid]) ? buckets[key][sid] : 0;
+      });
+      datasets.push({
+        type: "bar",
+        label: seriesLabels[idx] || sid,
+        data: data,
+        backgroundColor: CHART_COLORS[idx % CHART_COLORS.length] + "CC",
+        borderColor: CHART_COLORS[idx % CHART_COLORS.length],
+        borderWidth: 1,
+        order: 2
+      });
+    });
+
+    // Total trend line
+    var totalData = orderedKeys.map(function (key) {
+      var sum = 0;
+      if (buckets[key]) {
+        Object.keys(buckets[key]).forEach(function (sid) { sum += buckets[key][sid]; });
+      }
+      return sum;
+    });
+
+    datasets.push({
+      type: "line",
+      label: "Total",
+      data: totalData,
+      borderColor: "#333",
+      backgroundColor: "transparent",
+      borderWidth: 2,
+      pointRadius: 3,
+      pointBackgroundColor: "#333",
+      tension: 0.3,
+      order: 1
+    });
+
+    return { labels: labels, datasets: datasets };
+  }
+
+  function renderChart(chartData) {
+    var ctx = els.chart.getContext("2d");
+    if (chartInstance) {
+      chartInstance.data = chartData;
+      chartInstance.update("none");
+      return;
+    }
+    chartInstance = new Chart(ctx, {
+      data: chartData,
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: {
+          mode: "index",
+          intersect: false
+        },
+        plugins: {
+          legend: {
+            position: "bottom",
+            labels: { boxWidth: 12, padding: 12, font: { size: 12 } }
+          },
+          tooltip: {
+            callbacks: {
+              title: function (items) {
+                return items[0].label;
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            stacked: true,
+            title: { display: true, text: "Period", font: { size: 12 } }
+          },
+          y: {
+            stacked: true,
+            beginAtZero: true,
+            title: { display: true, text: "Events", font: { size: 12 } },
+            ticks: {
+              precision: 0
+            }
+          }
+        }
+      }
+    });
+  }
+
+  // ─── Table Rendering ───
+
+  function buildTableRows(orderedKeys, buckets, mode, seriesIds, seriesLabels, viewMode) {
+    var rows = [];
+    if (viewMode === "groups") {
+      orderedKeys.forEach(function (key) {
+        seriesIds.forEach(function (sid, idx) {
+          var count = (buckets[key] && buckets[key][sid]) ? buckets[key][sid] : 0;
+          rows.push({ period: key, group: seriesLabels[idx], count: count });
+        });
+      });
+      return { headers: ["period", "group", "count"], rows: rows };
+    } else {
+      orderedKeys.forEach(function (key) {
+        seriesIds.forEach(function (sid, idx) {
+          var count = (buckets[key] && buckets[key][sid]) ? buckets[key][sid] : 0;
+          rows.push({ period: key, rule: seriesLabels[idx], count: count });
+        });
+      });
+      return { headers: ["period", "rule", "count"], rows: rows };
+    }
+  }
+
+  function renderTableHeaders() {
+    var thead = els.tableHead;
+    thead.innerHTML = "";
+    var tr = document.createElement("tr");
+    currentHeaders.forEach(function (h) {
+      var th = document.createElement("th");
+      th.className = "exd-sortable";
+      th.dataset.col = h;
+      th.textContent = h.charAt(0).toUpperCase() + h.slice(1);
+      var arrow = document.createElement("span");
+      arrow.className = "exd-sort-arrow";
+      th.appendChild(arrow);
+      if (sortState.col === h) {
+        th.classList.add("exd-sort-" + sortState.dir);
+      }
+      th.addEventListener("click", function () { handleSort(h); });
+      tr.appendChild(th);
+    });
+    thead.appendChild(tr);
+  }
+
+  function renderTableBody() {
+    var tbody = els.tableBody;
+    tbody.innerHTML = "";
+    var searchTerm = (els.tableSearch.value || "").toLowerCase();
+
+    var rows = currentRows.slice();
+
+    // Filter
+    if (searchTerm) {
+      rows = rows.filter(function (r) {
+        return currentHeaders.some(function (h) {
+          return String(r[h]).toLowerCase().indexOf(searchTerm) >= 0;
+        });
+      });
+    }
+
+    // Sort
+    if (sortState.col) {
+      var dir = sortState.dir === "asc" ? 1 : -1;
+      var col = sortState.col;
+      rows.sort(function (a, b) {
+        var va = a[col], vb = b[col];
+        if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir;
+        return String(va).localeCompare(String(vb)) * dir;
+      });
+    }
+
+    rows.forEach(function (r) {
+      var tr = document.createElement("tr");
+      currentHeaders.forEach(function (h) {
+        var td = document.createElement("td");
+        td.textContent = r[h] != null ? r[h] : "";
+        if (h === "count") td.className = "exd-num";
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+  }
+
+  function handleSort(col) {
+    if (sortState.col === col) {
+      sortState.dir = sortState.dir === "asc" ? "desc" : "asc";
+    } else {
+      sortState.col = col;
+      sortState.dir = col === "count" ? "desc" : "asc";
+    }
+    renderTableHeaders();
+    renderTableBody();
+  }
+
+  // ─── KPI Rendering ───
+
+  function renderKpis(data, ruleCount, fromDate, toDate) {
+    els.kpiTotal.textContent = data.totalEvents.toLocaleString();
+    els.kpiDevices.textContent = data.uniqueDeviceCount.toLocaleString();
+    els.kpiPeriod.textContent = formatDate(fromDate) + " to " + formatDate(toDate);
+    els.kpiRules.textContent = ruleCount;
+  }
+
+  // ─── CSV Export ───
+
+  function exportCsv() {
+    if (!currentRows.length) return;
+    var lines = [currentHeaders.join(",")];
+    currentRows.forEach(function (r) {
+      var vals = currentHeaders.map(function (h) {
+        var v = r[h] != null ? String(r[h]) : "";
+        if (v.indexOf(",") >= 0 || v.indexOf('"') >= 0 || v.indexOf("\n") >= 0) {
+          v = '"' + v.replace(/"/g, '""') + '"';
+        }
+        return v;
+      });
+      lines.push(vals.join(","));
+    });
+    var blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "exception_events_" + formatDate(new Date()) + ".csv";
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // ─── Generate (main flow) ───
+
+  function generate() {
+    // Validate inputs
+    var selectedRules = rulePicker.getSelected();
+    if (selectedRules.length === 0) {
+      setStatus("Please select at least one rule.");
+      return;
+    }
+
+    var fromStr = els.fromDate.value;
+    var toStr = els.toDate.value;
+    if (!fromStr || !toStr) {
+      setStatus("Please set both From and To dates.");
+      return;
+    }
+
+    var fromDate = parseLocalDate(fromStr);
+    var toDate = parseLocalDate(toStr);
+    if (fromDate >= toDate) {
+      setStatus("From date must be before To date.");
+      return;
+    }
+
+    var granularity = document.querySelector("#exd-root .exd-gran-btn.active").dataset.gran;
+    var viewMode = document.querySelector("#exd-root .exd-view-btn.active").dataset.view;
+
+    var selectedGroups = [];
+    if (viewMode === "groups") {
+      selectedGroups = groupPicker.getSelected();
+      if (selectedGroups.length === 0) {
+        setStatus("Please select at least one group for Groups view.");
+        return;
+      }
+    }
+
+    // Abort any in-flight request
+    if (abortController) abortController.abort();
+    abortController = new AbortController();
+
+    // Reset UI
+    showEmpty(false);
+    showWarning(null);
+    showLoading(true, "Fetching exception events...");
+    setProgress(0);
+    setStatus("");
+    els.generateBtn.disabled = true;
+
+    fetchExceptionEvents(selectedRules, fromDate, toDate, function (pct) {
+      setProgress(pct);
+      els.loadingText.textContent = "Fetching... " + Math.round(pct) + "%";
+    }).then(function (result) {
+      if (isAborted()) return;
+      showLoading(false);
+      els.generateBtn.disabled = false;
+
+      if (result.hitLimit) {
+        showWarning("Warning: Some queries hit the 50,000 result limit. Results may be incomplete. Try a shorter date range.");
+      }
+
+      if (result.events.length === 0) {
+        showEmpty(true);
+        els.kpiTotal.textContent = "0";
+        els.kpiDevices.textContent = "0";
+        els.kpiPeriod.textContent = formatDate(fromDate) + " to " + formatDate(toDate);
+        els.kpiRules.textContent = selectedRules.length;
+        if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+        els.tableHead.innerHTML = "";
+        els.tableBody.innerHTML = "";
+        currentRows = [];
+        return;
+      }
+
+      // Build label lookups
+      var ruleLabelMap = {};
+      allRules.forEach(function (r) { ruleLabelMap[r.id] = r.name; });
+      var groupLabelMap = {};
+      allGroups.forEach(function (g) { groupLabelMap[g.id] = g.name; });
+
+      // Aggregate
+      var agg = aggregateEvents(result.events, selectedRules, selectedGroups, granularity, viewMode);
+
+      // Determine series
+      var seriesIds, seriesLabels;
+      if (viewMode === "groups") {
+        seriesIds = selectedGroups;
+        seriesLabels = selectedGroups.map(function (id) { return groupLabelMap[id] || id; });
+      } else {
+        seriesIds = selectedRules;
+        seriesLabels = selectedRules.map(function (id) { return ruleLabelMap[id] || id; });
+      }
+
+      // Chart
+      var chartData = buildChartData(agg.orderedKeys, agg.buckets, granularity, seriesIds, seriesLabels);
+      renderChart(chartData);
+
+      // Table
+      var tableData = buildTableRows(agg.orderedKeys, agg.buckets, granularity, seriesIds, seriesLabels, viewMode);
+      currentHeaders = tableData.headers;
+      currentRows = tableData.rows;
+      sortState = { col: "period", dir: "asc" };
+      renderTableHeaders();
+      renderTableBody();
+
+      // KPIs
+      renderKpis(agg, selectedRules.length, fromDate, toDate);
+
+      setStatus("Loaded " + result.events.length.toLocaleString() + " events");
+    }).catch(function (err) {
+      if (isAborted()) return;
+      showLoading(false);
+      els.generateBtn.disabled = false;
+      setStatus("Error: " + (err.message || err));
+      console.error("generate error:", err);
+    });
+  }
+
+  // ─── Event Binding ───
+
+  function bindEvents() {
+    // Granularity buttons
+    document.querySelectorAll("#exd-root .exd-gran-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        document.querySelectorAll("#exd-root .exd-gran-btn").forEach(function (b) {
+          b.classList.remove("active");
+        });
+        btn.classList.add("active");
+      });
+    });
+
+    // View toggle
+    document.querySelectorAll("#exd-root .exd-view-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        document.querySelectorAll("#exd-root .exd-view-btn").forEach(function (b) {
+          b.classList.remove("active");
+        });
+        btn.classList.add("active");
+        var groupWrap = document.querySelector("#exd-root .exd-group-picker-wrap");
+        groupWrap.style.display = btn.dataset.view === "groups" ? "" : "none";
+      });
+    });
+
+    // Generate button
+    els.generateBtn.addEventListener("click", generate);
+
+    // Search filter
+    els.tableSearch.addEventListener("input", function () {
+      renderTableBody();
+    });
+
+    // Export CSV
+    els.exportCsv.addEventListener("click", exportCsv);
+
+    // Close dropdowns on outside click
+    document.addEventListener("click", function () {
+      closeAllDropdowns();
+    });
+  }
+
+  // ─── Set Default Dates ───
+
+  function setDefaultDates() {
+    var now = new Date();
+    var from = new Date(now);
+    from.setDate(from.getDate() - 30);
+    els.toDate.value = formatDate(now);
+    els.fromDate.value = formatDate(from);
+  }
+
+  // ─── Add-in Lifecycle ───
+
+  return {
+    initialize: function (freshApi, state, callback) {
+      api = freshApi;
+
+      // Cache DOM elements
+      els.loading = $("exd-loading");
+      els.loadingText = els.loading.querySelector(".exd-loading-text");
+      els.progressFill = els.loading.querySelector(".exd-progress-fill");
+      els.empty = $("exd-empty");
+      els.warning = $("exd-warning");
+      els.status = $("exd-status");
+      els.fromDate = $("exd-from");
+      els.toDate = $("exd-to");
+      els.generateBtn = $("exd-generate");
+      els.chart = $("exd-chart");
+      els.tableHead = $("exd-table-head");
+      els.tableBody = $("exd-table-body");
+      els.tableSearch = $("exd-table-search");
+      els.exportCsv = $("exd-export-csv");
+      els.kpiTotal = $("exd-kpi-total");
+      els.kpiDevices = $("exd-kpi-devices");
+      els.kpiPeriod = $("exd-kpi-period");
+      els.kpiRules = $("exd-kpi-rules");
+
+      // Init multi-select widgets
+      rulePicker = initMultiSelect({ id: "exd-rule-picker", placeholder: "Select rules..." });
+      groupPicker = initMultiSelect({ id: "exd-group-picker", placeholder: "Select groups..." });
+
+      // Bind events
+      bindEvents();
+
+      // Set default dates
+      setDefaultDates();
+
+      // Load reference data
+      loadReferenceData().then(function () {
+        callback();
+      }).catch(function () {
+        callback();
+      });
+    },
+
+    focus: function (freshApi, state) {
+      api = freshApi;
+    },
+
+    blur: function () {
+      if (abortController) {
+        abortController.abort();
+        abortController = null;
+      }
+      showLoading(false);
+    }
+  };
+};
