@@ -360,7 +360,7 @@ geotab.addin.exceptionDashboard = function () {
   function aggregateEvents(events, ruleIds, groupIds, mode, viewMode) {
     var ruleIdSet = new Set(ruleIds);
     var groupIdSet = groupIds ? new Set(groupIds) : null;
-    var bucketsMap = {}; // key -> { rule/group -> count }
+    var bucketsMap = {}; // key -> { seriesId -> count }
     var uniqueDevices = new Set();
 
     events.forEach(function (evt) {
@@ -369,22 +369,21 @@ geotab.addin.exceptionDashboard = function () {
       if (!ruleId || !ruleIdSet.has(ruleId)) return;
 
       var deviceId = evt.device ? evt.device.id : null;
+      var key = getBucketKey(evt.activeFrom, mode);
+      if (!bucketsMap[key]) bucketsMap[key] = {};
 
       if (viewMode === "groups" && groupIdSet) {
-        // In groups mode, attribute to each matching group
+        // Groups mode: compound key groupId::ruleId for full breakdown
         var devGroups = deviceId ? (deviceGroupMap[deviceId] || []) : [];
         var matchedGroups = devGroups.filter(function (gid) { return groupIdSet.has(gid); });
         if (matchedGroups.length === 0) return;
-        var key = getBucketKey(evt.activeFrom, mode);
-        if (!bucketsMap[key]) bucketsMap[key] = {};
         matchedGroups.forEach(function (gid) {
-          if (!bucketsMap[key][gid]) bucketsMap[key][gid] = 0;
-          bucketsMap[key][gid]++;
+          var compoundKey = gid + "::" + ruleId;
+          if (!bucketsMap[key][compoundKey]) bucketsMap[key][compoundKey] = 0;
+          bucketsMap[key][compoundKey]++;
         });
       } else {
         // Company mode: aggregate by rule
-        var key = getBucketKey(evt.activeFrom, mode);
-        if (!bucketsMap[key]) bucketsMap[key] = {};
         if (!bucketsMap[key][ruleId]) bucketsMap[key][ruleId] = 0;
         bucketsMap[key][ruleId]++;
       }
@@ -410,32 +409,30 @@ geotab.addin.exceptionDashboard = function () {
     "#8bc34a", "#ff5722", "#607d8b", "#795548", "#cddc39"
   ];
 
-  function buildChartData(orderedKeys, buckets, mode, seriesIds, seriesLabels) {
-    var labels = orderedKeys.map(function (k) {
-      if (mode === "week") return k; // "W2026-01-05"
-      if (mode === "month") return k; // "2026-01"
-      return k; // "2026-01-05"
-    });
-
+  function buildChartData(orderedKeys, buckets, mode, seriesMeta) {
+    // seriesMeta: array of { id, label, stack, colorIndex }
+    var labels = orderedKeys.slice();
     var datasets = [];
 
-    // One bar dataset per series (rule or group)
-    seriesIds.forEach(function (sid, idx) {
+    // One bar dataset per series
+    seriesMeta.forEach(function (s) {
       var data = orderedKeys.map(function (key) {
-        return (buckets[key] && buckets[key][sid]) ? buckets[key][sid] : 0;
+        return (buckets[key] && buckets[key][s.id]) ? buckets[key][s.id] : 0;
       });
-      datasets.push({
+      var ds = {
         type: "bar",
-        label: seriesLabels[idx] || sid,
+        label: s.label,
         data: data,
-        backgroundColor: CHART_COLORS[idx % CHART_COLORS.length] + "CC",
-        borderColor: CHART_COLORS[idx % CHART_COLORS.length],
+        backgroundColor: CHART_COLORS[s.colorIndex % CHART_COLORS.length] + "CC",
+        borderColor: CHART_COLORS[s.colorIndex % CHART_COLORS.length],
         borderWidth: 1,
-        order: 2
-      });
+        order: 3
+      };
+      if (s.stack) ds.stack = s.stack;
+      datasets.push(ds);
     });
 
-    // Total trend line
+    // Total per period (sum all series)
     var totalData = orderedKeys.map(function (key) {
       var sum = 0;
       if (buckets[key]) {
@@ -444,6 +441,7 @@ geotab.addin.exceptionDashboard = function () {
       return sum;
     });
 
+    // Total trend line
     datasets.push({
       type: "line",
       label: "Total",
@@ -454,19 +452,40 @@ geotab.addin.exceptionDashboard = function () {
       pointRadius: 3,
       pointBackgroundColor: "#333",
       tension: 0.3,
+      yAxisID: "y",
       order: 1
+    });
+
+    // % Change line (period-over-period on total)
+    var pctChangeData = totalData.map(function (val, i) {
+      if (i === 0) return null;
+      var prev = totalData[i - 1];
+      if (prev === 0) return val === 0 ? 0 : null;
+      return Math.round(((val - prev) / prev) * 1000) / 10; // one decimal
+    });
+
+    datasets.push({
+      type: "line",
+      label: "% Change",
+      data: pctChangeData,
+      borderColor: "#e74c3c",
+      backgroundColor: "transparent",
+      borderWidth: 2,
+      borderDash: [5, 3],
+      pointRadius: 3,
+      pointBackgroundColor: "#e74c3c",
+      tension: 0.3,
+      yAxisID: "y1",
+      order: 0
     });
 
     return { labels: labels, datasets: datasets };
   }
 
   function renderChart(chartData) {
+    // Destroy and recreate to handle axis changes cleanly
+    if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
     var ctx = els.chart.getContext("2d");
-    if (chartInstance) {
-      chartInstance.data = chartData;
-      chartInstance.update("none");
-      return;
-    }
     chartInstance = new Chart(ctx, {
       data: chartData,
       options: {
@@ -485,6 +504,14 @@ geotab.addin.exceptionDashboard = function () {
             callbacks: {
               title: function (items) {
                 return items[0].label;
+              },
+              label: function (ctx) {
+                var label = ctx.dataset.label || "";
+                var val = ctx.parsed.y;
+                if (ctx.dataset.yAxisID === "y1" && val != null) {
+                  return label + ": " + val + "%";
+                }
+                return label + ": " + (val != null ? val.toLocaleString() : "—");
               }
             }
           }
@@ -497,10 +524,18 @@ geotab.addin.exceptionDashboard = function () {
           y: {
             stacked: true,
             beginAtZero: true,
+            position: "left",
             title: { display: true, text: "Events", font: { size: 12 } },
+            ticks: { precision: 0 }
+          },
+          y1: {
+            position: "right",
+            title: { display: true, text: "% Change", font: { size: 12 }, color: "#e74c3c" },
             ticks: {
-              precision: 0
-            }
+              color: "#e74c3c",
+              callback: function (v) { return v + "%"; }
+            },
+            grid: { drawOnChartArea: false }
           }
         }
       }
@@ -509,25 +544,43 @@ geotab.addin.exceptionDashboard = function () {
 
   // ─── Table Rendering ───
 
-  function buildTableRows(orderedKeys, buckets, mode, seriesIds, seriesLabels, viewMode) {
+  function buildTableRows(orderedKeys, buckets, mode, seriesMeta, viewMode) {
+    // seriesMeta: array of { id, label, groupLabel, ruleLabel }
     var rows = [];
-    if (viewMode === "groups") {
-      orderedKeys.forEach(function (key) {
-        seriesIds.forEach(function (sid, idx) {
-          var count = (buckets[key] && buckets[key][sid]) ? buckets[key][sid] : 0;
-          rows.push({ period: key, group: seriesLabels[idx], count: count });
-        });
+    // Track previous period count per series for % change
+    var prevCount = {}; // seriesId -> previous count
+
+    orderedKeys.forEach(function (key) {
+      seriesMeta.forEach(function (s) {
+        var count = (buckets[key] && buckets[key][s.id]) ? buckets[key][s.id] : 0;
+        var change = "—";
+        if (prevCount.hasOwnProperty(s.id)) {
+          var prev = prevCount[s.id];
+          if (prev === 0) {
+            change = count === 0 ? "0.0%" : "—";
+          } else {
+            var pct = ((count - prev) / prev) * 100;
+            change = (pct >= 0 ? "+" : "") + pct.toFixed(1) + "%";
+          }
+        }
+        prevCount[s.id] = count;
+
+        var row = { period: key, count: count, change: change };
+        if (viewMode === "groups") {
+          row.group = s.groupLabel || "";
+          row.rule = s.ruleLabel || s.label;
+        } else {
+          row.rule = s.label;
+        }
+        rows.push(row);
       });
-      return { headers: ["period", "group", "count"], rows: rows };
-    } else {
-      orderedKeys.forEach(function (key) {
-        seriesIds.forEach(function (sid, idx) {
-          var count = (buckets[key] && buckets[key][sid]) ? buckets[key][sid] : 0;
-          rows.push({ period: key, rule: seriesLabels[idx], count: count });
-        });
-      });
-      return { headers: ["period", "rule", "count"], rows: rows };
-    }
+    });
+
+    var headers = viewMode === "groups"
+      ? ["period", "group", "rule", "count", "change"]
+      : ["period", "rule", "count", "change"];
+
+    return { headers: headers, rows: rows };
   }
 
   function renderTableHeaders() {
@@ -538,7 +591,8 @@ geotab.addin.exceptionDashboard = function () {
       var th = document.createElement("th");
       th.className = "exd-sortable";
       th.dataset.col = h;
-      th.textContent = h.charAt(0).toUpperCase() + h.slice(1);
+      var headerLabels = { period: "Period", group: "Group", rule: "Rule", count: "Count", change: "% Change" };
+      th.textContent = headerLabels[h] || h.charAt(0).toUpperCase() + h.slice(1);
       var arrow = document.createElement("span");
       arrow.className = "exd-sort-arrow";
       th.appendChild(arrow);
@@ -582,8 +636,14 @@ geotab.addin.exceptionDashboard = function () {
       var tr = document.createElement("tr");
       currentHeaders.forEach(function (h) {
         var td = document.createElement("td");
-        td.textContent = r[h] != null ? r[h] : "";
+        var val = r[h] != null ? r[h] : "";
+        td.textContent = val;
         if (h === "count") td.className = "exd-num";
+        if (h === "change") {
+          td.className = "exd-num";
+          if (typeof val === "string" && val.indexOf("+") === 0) td.style.color = "#e74c3c";
+          else if (typeof val === "string" && val.indexOf("-") === 0) td.style.color = "#27ae60";
+        }
         tr.appendChild(td);
       });
       tbody.appendChild(tr);
@@ -719,22 +779,43 @@ geotab.addin.exceptionDashboard = function () {
       // Aggregate
       var agg = aggregateEvents(result.events, selectedRules, selectedGroups, granularity, viewMode);
 
-      // Determine series
-      var seriesIds, seriesLabels;
+      // Build series metadata
+      var seriesMeta = [];
       if (viewMode === "groups") {
-        seriesIds = selectedGroups;
-        seriesLabels = selectedGroups.map(function (id) { return groupLabelMap[id] || id; });
+        // Compound series: one per group × rule, stacked by group
+        selectedGroups.forEach(function (gid) {
+          var groupName = groupLabelMap[gid] || gid;
+          selectedRules.forEach(function (rid, rIdx) {
+            var ruleName = ruleLabelMap[rid] || rid;
+            seriesMeta.push({
+              id: gid + "::" + rid,
+              label: groupName + " — " + ruleName,
+              groupLabel: groupName,
+              ruleLabel: ruleName,
+              stack: groupName,
+              colorIndex: rIdx  // same rule = same color across groups
+            });
+          });
+        });
       } else {
-        seriesIds = selectedRules;
-        seriesLabels = selectedRules.map(function (id) { return ruleLabelMap[id] || id; });
+        // Company mode: one series per rule
+        selectedRules.forEach(function (rid, idx) {
+          seriesMeta.push({
+            id: rid,
+            label: ruleLabelMap[rid] || rid,
+            ruleLabel: ruleLabelMap[rid] || rid,
+            stack: "company",
+            colorIndex: idx
+          });
+        });
       }
 
       // Chart
-      var chartData = buildChartData(agg.orderedKeys, agg.buckets, granularity, seriesIds, seriesLabels);
+      var chartData = buildChartData(agg.orderedKeys, agg.buckets, granularity, seriesMeta);
       renderChart(chartData);
 
       // Table
-      var tableData = buildTableRows(agg.orderedKeys, agg.buckets, granularity, seriesIds, seriesLabels, viewMode);
+      var tableData = buildTableRows(agg.orderedKeys, agg.buckets, granularity, seriesMeta, viewMode);
       currentHeaders = tableData.headers;
       currentRows = tableData.rows;
       sortState = { col: "period", dir: "asc" };
