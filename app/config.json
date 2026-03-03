@@ -1,5 +1,5 @@
 {
-  "name": "Exception Dashboard",
+  "name": "Event Trends Dashboard",
   "supportEmail": "support@example.com",
   "version": "1.0",
   "items": [
@@ -7,7 +7,7 @@
       "url": "https://cpellegrinoGT.github.io/addin-exception-dashboard/index.html",
       "path": "ActivityLink/",
       "menuName": {
-        "en": "Exception Dashboard"
+        "en": "Event Trends Dashboard"
       },
       "svgIcon": "https://cpellegrinoGT.github.io/addin-exception-dashboard/images/icon.svg"
     }
