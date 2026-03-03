@@ -10,6 +10,7 @@ geotab.addin.exceptionDashboard = function () {
   var allGroups = [];
   var allDevices = [];
   var deviceGroupMap = {}; // deviceId -> [groupId, ...]
+  var groupChildrenMap = {}; // groupId -> [direct child groupIds]
 
   // Current results
   var currentRows = [];
@@ -59,6 +60,33 @@ geotab.addin.exceptionDashboard = function () {
     return new Promise(function (resolve, reject) {
       api.multiCall(calls, resolve, reject);
     });
+  }
+
+  // ─── Group Hierarchy ───
+
+  function buildGroupChildrenMap(groups) {
+    groupChildrenMap = {};
+    groups.forEach(function (g) {
+      if (g.children && g.children.length) {
+        groupChildrenMap[g.id] = g.children.map(function (c) { return c.id; });
+      }
+    });
+  }
+
+  function getDescendantIds(groupId) {
+    // Returns a Set containing groupId and all its descendants
+    var result = new Set();
+    var stack = [groupId];
+    while (stack.length) {
+      var gid = stack.pop();
+      if (result.has(gid)) continue;
+      result.add(gid);
+      var children = groupChildrenMap[gid];
+      if (children) {
+        children.forEach(function (cid) { stack.push(cid); });
+      }
+    }
+    return result;
   }
 
   // ─── Multi-Select Widget ───
@@ -226,6 +254,9 @@ geotab.addin.exceptionDashboard = function () {
       allGroups = results[1] || [];
       allDevices = results[2] || [];
 
+      // Build group hierarchy map
+      buildGroupChildrenMap(allGroups);
+
       // Build device-to-groups map
       deviceGroupMap = {};
       allDevices.forEach(function (d) {
@@ -359,9 +390,22 @@ geotab.addin.exceptionDashboard = function () {
 
   function aggregateEvents(events, ruleIds, groupIds, mode, viewMode) {
     var ruleIdSet = new Set(ruleIds);
-    var groupIdSet = groupIds ? new Set(groupIds) : null;
     var bucketsMap = {}; // key -> { seriesId -> count }
     var uniqueDevices = new Set();
+
+    // For groups mode: pre-compute expanded descendant sets per selected group
+    // Maps every descendant groupId back to its selected ancestor(s)
+    var descendantToSelected = null;
+    if (viewMode === "groups" && groupIds && groupIds.length) {
+      descendantToSelected = {};
+      groupIds.forEach(function (selectedGid) {
+        var descendants = getDescendantIds(selectedGid);
+        descendants.forEach(function (descId) {
+          if (!descendantToSelected[descId]) descendantToSelected[descId] = [];
+          descendantToSelected[descId].push(selectedGid);
+        });
+      });
+    }
 
     events.forEach(function (evt) {
       if (!evt.activeFrom) return;
@@ -372,16 +416,23 @@ geotab.addin.exceptionDashboard = function () {
       var key = getBucketKey(evt.activeFrom, mode);
       if (!bucketsMap[key]) bucketsMap[key] = {};
 
-      if (viewMode === "groups" && groupIdSet) {
-        // Groups mode: compound key groupId::ruleId for full breakdown
+      if (viewMode === "groups" && descendantToSelected) {
+        // Groups mode: match device groups against expanded descendant sets,
+        // attribute count to the selected parent group
         var devGroups = deviceId ? (deviceGroupMap[deviceId] || []) : [];
-        var matchedGroups = devGroups.filter(function (gid) { return groupIdSet.has(gid); });
-        if (matchedGroups.length === 0) return;
-        matchedGroups.forEach(function (gid) {
-          var compoundKey = gid + "::" + ruleId;
-          if (!bucketsMap[key][compoundKey]) bucketsMap[key][compoundKey] = 0;
-          bucketsMap[key][compoundKey]++;
+        var attributed = new Set(); // avoid double-counting to same parent
+        devGroups.forEach(function (dgid) {
+          var parents = descendantToSelected[dgid];
+          if (!parents) return;
+          parents.forEach(function (selectedGid) {
+            if (attributed.has(selectedGid)) return;
+            attributed.add(selectedGid);
+            var compoundKey = selectedGid + "::" + ruleId;
+            if (!bucketsMap[key][compoundKey]) bucketsMap[key][compoundKey] = 0;
+            bucketsMap[key][compoundKey]++;
+          });
         });
+        if (attributed.size === 0) return;
       } else {
         // Company mode: aggregate by rule
         if (!bucketsMap[key][ruleId]) bucketsMap[key][ruleId] = 0;
