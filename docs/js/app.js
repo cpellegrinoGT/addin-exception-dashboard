@@ -494,6 +494,7 @@ geotab.addin.exceptionDashboard = function () {
       var ds = {
         type: "bar",
         label: s.label,
+        _ruleName: s.ruleLabel || s.label,
         data: data,
         backgroundColor: CHART_COLORS[s.colorIndex % CHART_COLORS.length] + "CC",
         borderColor: CHART_COLORS[s.colorIndex % CHART_COLORS.length],
@@ -629,20 +630,73 @@ geotab.addin.exceptionDashboard = function () {
             position: "bottom",
             labels: {
               boxWidth: 12, padding: 12, font: { size: 12 },
-              filter: function (item, chartData) {
-                // In groups mode, legend shows only rule names (dedup by color)
-                var stackNames = chartData._stackNames;
-                if (!stackNames || stackNames.length <= 1) return true;
-                var ds = chartData.datasets[item.datasetIndex];
-                if (ds.type !== "bar") return true;
-                // Show only the first occurrence of each colorIndex
-                var color = ds.borderColor;
-                for (var i = 0; i < item.datasetIndex; i++) {
-                  var prev = chartData.datasets[i];
-                  if (prev.type === "bar" && prev.borderColor === color) return false;
-                }
-                return true;
+              generateLabels: function (chart) {
+                var stackNames = chart.data._stackNames;
+                var isGrouped = stackNames && stackNames.length > 1;
+                var seen = {};
+                var labels = [];
+
+                chart.data.datasets.forEach(function (ds, idx) {
+                  if (ds.type === "bar" && isGrouped) {
+                    // Dedup by color — show one legend entry per rule
+                    var color = ds.borderColor;
+                    if (seen[color]) return;
+                    seen[color] = true;
+                    // Check if ALL datasets with this color are hidden
+                    var allHidden = chart.data.datasets.every(function (d, i) {
+                      if (d.type !== "bar" || d.borderColor !== color) return true;
+                      return !chart.isDatasetVisible(i);
+                    });
+                    labels.push({
+                      text: ds._ruleName || ds.label,
+                      fillStyle: allHidden ? "#ddd" : ds.backgroundColor,
+                      strokeStyle: allHidden ? "#ccc" : ds.borderColor,
+                      lineWidth: 1,
+                      hidden: allHidden,
+                      _color: color,
+                      datasetIndex: idx
+                    });
+                  } else {
+                    // Non-grouped bars, lines (Total, % Change)
+                    labels.push({
+                      text: ds.label,
+                      fillStyle: ds.type === "line" ? "transparent" : ds.backgroundColor,
+                      strokeStyle: ds.borderColor,
+                      lineWidth: ds.borderWidth || 1,
+                      lineDash: ds.borderDash || [],
+                      hidden: !chart.isDatasetVisible(idx),
+                      datasetIndex: idx
+                    });
+                  }
+                });
+                return labels;
               }
+            },
+            onClick: function (e, legendItem, legend) {
+              var chart = legend.chart;
+              var stackNames = chart.data._stackNames;
+              var isGrouped = stackNames && stackNames.length > 1;
+
+              if (isGrouped && legendItem._color) {
+                // Toggle ALL datasets with this rule's color
+                var color = legendItem._color;
+                var anyVisible = false;
+                chart.data.datasets.forEach(function (ds, i) {
+                  if (ds.type === "bar" && ds.borderColor === color) {
+                    if (chart.isDatasetVisible(i)) anyVisible = true;
+                  }
+                });
+                chart.data.datasets.forEach(function (ds, i) {
+                  if (ds.type === "bar" && ds.borderColor === color) {
+                    chart.setDatasetVisibility(i, !anyVisible);
+                  }
+                });
+              } else {
+                // Default toggle for single dataset
+                var idx = legendItem.datasetIndex;
+                chart.setDatasetVisibility(idx, !chart.isDatasetVisible(idx));
+              }
+              chart.update();
             }
           },
           tooltip: {
