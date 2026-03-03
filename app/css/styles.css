@@ -207,16 +207,37 @@
   border-color: #4a90d9;
 }
 
+.exd-ms-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px 4px 12px;
+  border-bottom: 1px solid #eee;
+}
+
 .exd-ms-select-all {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
   font-size: 12px;
   font-weight: 600;
   color: #555;
-  border-bottom: 1px solid #eee;
   cursor: pointer;
+}
+
+.exd-ms-clear {
+  border: none;
+  background: none;
+  color: #e74c3c;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.exd-ms-clear:hover {
+  background: #fde8e8;
 }
 
 .exd-ms-list {

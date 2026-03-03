@@ -97,6 +97,7 @@ geotab.addin.exceptionDashboard = function () {
     var dropdown = container.querySelector(".exd-ms-dropdown");
     var searchInput = container.querySelector(".exd-ms-search");
     var selectAllCb = container.querySelector(".exd-ms-select-all input");
+    var clearBtn = container.querySelector(".exd-ms-clear");
     var listEl = container.querySelector(".exd-ms-list");
 
     var items = [];
@@ -107,8 +108,19 @@ geotab.addin.exceptionDashboard = function () {
       listEl.innerHTML = "";
       var visibleCount = 0;
       var checkedCount = 0;
-      items.forEach(function (item) {
-        if (filt && item.label.toLowerCase().indexOf(filt) < 0) return;
+
+      // Sort: selected items first, then alphabetical
+      var sorted = items.filter(function (item) {
+        return !filt || item.label.toLowerCase().indexOf(filt) >= 0;
+      });
+      sorted.sort(function (a, b) {
+        var aChecked = selected.has(a.value) ? 0 : 1;
+        var bChecked = selected.has(b.value) ? 0 : 1;
+        if (aChecked !== bChecked) return aChecked - bChecked;
+        return a.label.localeCompare(b.label);
+      });
+
+      sorted.forEach(function (item) {
         visibleCount++;
         var checked = selected.has(item.value);
         if (checked) checkedCount++;
@@ -122,6 +134,7 @@ geotab.addin.exceptionDashboard = function () {
           else selected.delete(item.value);
           updateToggleText();
           updateSelectAll();
+          render(searchInput.value); // re-render to re-sort
         });
         var span = document.createElement("span");
         span.textContent = item.label;
@@ -183,6 +196,14 @@ geotab.addin.exceptionDashboard = function () {
         if (selectAllCb.checked) selected.add(item.value);
         else selected.delete(item.value);
       });
+      render(searchInput.value);
+      updateToggleText();
+    });
+
+    clearBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      selected.clear();
+      selectAllCb.checked = false;
       render(searchInput.value);
       updateToggleText();
     });
@@ -530,8 +551,64 @@ geotab.addin.exceptionDashboard = function () {
       order: 0
     });
 
-    return { labels: labels, datasets: datasets };
+    // Collect unique stack (group) names in order for the plugin
+    var stackNames = [];
+    var stackSeen = {};
+    seriesMeta.forEach(function (s) {
+      if (s.stack && !stackSeen[s.stack]) {
+        stackSeen[s.stack] = true;
+        stackNames.push(s.stack);
+      }
+    });
+
+    return { labels: labels, datasets: datasets, _stackNames: stackNames };
   }
+
+  // Chart.js plugin to draw group name labels above each stack cluster
+  var groupLabelPlugin = {
+    id: "exdGroupLabels",
+    afterDatasetsDraw: function (chart) {
+      var stackNames = chart.data._stackNames;
+      if (!stackNames || stackNames.length <= 1) return;
+
+      var ctx = chart.ctx;
+      var xScale = chart.scales.x;
+      var yScale = chart.scales.y;
+      var meta = {};
+
+      // Collect bar positions per stack per x-index
+      chart.data.datasets.forEach(function (ds, dsIdx) {
+        if (ds.type !== "bar" || !ds.stack) return;
+        var dsMeta = chart.getDatasetMeta(dsIdx);
+        if (!dsMeta.visible) return;
+        dsMeta.data.forEach(function (bar, i) {
+          var key = i + "::" + ds.stack;
+          if (!meta[key]) meta[key] = { stack: ds.stack, xIdx: i, minX: Infinity, maxX: -Infinity, topY: Infinity };
+          var barX = bar.x;
+          var halfW = bar.width / 2;
+          meta[key].minX = Math.min(meta[key].minX, barX - halfW);
+          meta[key].maxX = Math.max(meta[key].maxX, barX + halfW);
+          meta[key].topY = Math.min(meta[key].topY, bar.y);
+        });
+      });
+
+      ctx.save();
+      ctx.font = "bold 10px -apple-system, BlinkMacSystemFont, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#666";
+
+      Object.keys(meta).forEach(function (key) {
+        var m = meta[key];
+        if (m.topY === Infinity) return;
+        var centerX = (m.minX + m.maxX) / 2;
+        var labelY = m.topY - 6;
+        if (labelY < yScale.top + 10) labelY = m.topY + 12;
+        ctx.fillText(m.stack, centerX, labelY);
+      });
+
+      ctx.restore();
+    }
+  };
 
   function renderChart(chartData) {
     // Destroy and recreate to handle axis changes cleanly
@@ -539,6 +616,7 @@ geotab.addin.exceptionDashboard = function () {
     var ctx = els.chart.getContext("2d");
     chartInstance = new Chart(ctx, {
       data: chartData,
+      plugins: [groupLabelPlugin],
       options: {
         responsive: true,
         maintainAspectRatio: false,
@@ -549,7 +627,23 @@ geotab.addin.exceptionDashboard = function () {
         plugins: {
           legend: {
             position: "bottom",
-            labels: { boxWidth: 12, padding: 12, font: { size: 12 } }
+            labels: {
+              boxWidth: 12, padding: 12, font: { size: 12 },
+              filter: function (item, chartData) {
+                // In groups mode, legend shows only rule names (dedup by color)
+                var stackNames = chartData._stackNames;
+                if (!stackNames || stackNames.length <= 1) return true;
+                var ds = chartData.datasets[item.datasetIndex];
+                if (ds.type !== "bar") return true;
+                // Show only the first occurrence of each colorIndex
+                var color = ds.borderColor;
+                for (var i = 0; i < item.datasetIndex; i++) {
+                  var prev = chartData.datasets[i];
+                  if (prev.type === "bar" && prev.borderColor === color) return false;
+                }
+                return true;
+              }
+            }
           },
           tooltip: {
             callbacks: {
