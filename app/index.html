@@ -74,6 +74,7 @@
     </div>
 
     <span id="exd-status" class="exd-status-text"></span>
+    <button type="button" id="exd-settings-btn" class="exd-settings-btn" title="Settings">&#9881;</button>
   </div>
 
   <!-- KPI Strip -->
@@ -140,6 +141,48 @@
 
     <!-- Warning Banner -->
     <div id="exd-warning" style="display:none"></div>
+  </div>
+
+  <!-- Settings Backdrop -->
+  <div id="exd-settings-backdrop" class="exd-settings-backdrop"></div>
+
+  <!-- Settings Panel -->
+  <div id="exd-settings-panel" class="exd-settings-panel">
+    <div class="exd-settings-header">
+      <span class="exd-settings-title">Settings</span>
+      <button type="button" id="exd-settings-close" class="exd-settings-close">&times;</button>
+    </div>
+    <div class="exd-settings-body">
+
+      <!-- Section 1: Default Rules -->
+      <div class="exd-settings-section">
+        <h3 class="exd-settings-section-title">Default Rules</h3>
+        <p class="exd-settings-section-desc">Pre-selected rules on every load.</p>
+        <input type="text" id="exd-settings-rule-search" class="exd-input exd-settings-search" placeholder="Search rules...">
+        <div id="exd-settings-rule-list" class="exd-settings-rule-list"></div>
+        <button type="button" id="exd-settings-save-defaults" class="exd-btn-primary exd-settings-save-btn">Save as Defaults</button>
+      </div>
+
+      <!-- Section 2: Rule Colors -->
+      <div class="exd-settings-section">
+        <h3 class="exd-settings-section-title">Rule Colors</h3>
+        <p class="exd-settings-section-desc">Custom chart colors per rule.</p>
+        <input type="text" id="exd-settings-color-search" class="exd-input exd-settings-search" placeholder="Search rules...">
+        <div id="exd-settings-color-list" class="exd-settings-rule-list"></div>
+      </div>
+
+      <!-- Section 3: Saved Views -->
+      <div class="exd-settings-section">
+        <h3 class="exd-settings-section-title">Saved Views</h3>
+        <p class="exd-settings-section-desc">Save and restore toolbar state.</p>
+        <div class="exd-settings-view-save">
+          <input type="text" id="exd-settings-view-name" class="exd-input" placeholder="View name...">
+          <button type="button" id="exd-settings-save-view" class="exd-btn-primary">Save Current</button>
+        </div>
+        <div id="exd-settings-views-list" class="exd-settings-views-list"></div>
+      </div>
+
+    </div>
   </div>
 
 </div>

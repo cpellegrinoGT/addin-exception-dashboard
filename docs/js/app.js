@@ -5,6 +5,54 @@ geotab.addin.exceptionDashboard = function () {
   var abortController = null;
   var chartInstance = null;
 
+  // ─── Settings Manager (localStorage) ───
+
+  var settings = (function () {
+    var STORAGE_PREFIX = "exd_settings_v1_";
+    var storageKey = "";
+    var data = { defaultRules: [], ruleColors: {}, views: [] };
+
+    function persist() {
+      try { localStorage.setItem(storageKey, JSON.stringify(data)); } catch (e) { /* quota */ }
+    }
+
+    return {
+      init: function (database) {
+        storageKey = STORAGE_PREFIX + (database || location.hostname);
+        try {
+          var raw = localStorage.getItem(storageKey);
+          if (raw) {
+            var parsed = JSON.parse(raw);
+            data.defaultRules = parsed.defaultRules || [];
+            data.ruleColors = parsed.ruleColors || {};
+            data.views = parsed.views || [];
+          }
+        } catch (e) { /* corrupt data, use defaults */ }
+      },
+      get: function () { return data; },
+      setDefaultRules: function (ids) {
+        data.defaultRules = ids.slice();
+        persist();
+      },
+      setRuleColor: function (ruleId, color) {
+        data.ruleColors[ruleId] = color;
+        persist();
+      },
+      clearRuleColor: function (ruleId) {
+        delete data.ruleColors[ruleId];
+        persist();
+      },
+      saveView: function (view) {
+        data.views.push(view);
+        persist();
+      },
+      deleteView: function (viewId) {
+        data.views = data.views.filter(function (v) { return v.id !== viewId; });
+        persist();
+      }
+    };
+  })();
+
   // Reference data
   var allRules = [];
   var allGroups = [];
@@ -102,6 +150,7 @@ geotab.addin.exceptionDashboard = function () {
 
     var items = [];
     var selected = new Set();
+    var getColorFn = cfg.getColor || null; // optional callback(value) -> color|null
 
     function render(filter) {
       var filt = (filter || "").toLowerCase();
@@ -136,9 +185,19 @@ geotab.addin.exceptionDashboard = function () {
           updateSelectAll();
           render(searchInput.value); // re-render to re-sort
         });
+        label.appendChild(cb);
+        // Color dot (if getColor callback returns a color for this item)
+        if (getColorFn) {
+          var dotColor = getColorFn(item.value);
+          if (dotColor) {
+            var dot = document.createElement("span");
+            dot.className = "exd-ms-color-dot";
+            dot.style.backgroundColor = dotColor;
+            label.appendChild(dot);
+          }
+        }
         var span = document.createElement("span");
         span.textContent = item.label;
-        label.appendChild(cb);
         label.appendChild(span);
         listEl.appendChild(label);
       });
@@ -222,6 +281,21 @@ geotab.addin.exceptionDashboard = function () {
       getSelected: function () {
         return Array.from(selected);
       },
+      setSelected: function (ids) {
+        selected.clear();
+        var validValues = new Set(items.map(function (it) { return it.value; }));
+        ids.forEach(function (id) {
+          if (validValues.has(id)) selected.add(id);
+        });
+        updateToggleText();
+        render(searchInput.value);
+      },
+      refresh: function () {
+        render(searchInput.value);
+      },
+      getItems: function () {
+        return items.slice();
+      },
       container: container,
       dropdown: dropdown
     };
@@ -293,6 +367,12 @@ geotab.addin.exceptionDashboard = function () {
           return { value: r.id, label: r.name };
         });
       rulePicker.setItems(ruleItems);
+
+      // Apply default rules from settings
+      var defaultRuleIds = settings.get().defaultRules;
+      if (defaultRuleIds.length > 0) {
+        rulePicker.setSelected(defaultRuleIds);
+      }
 
       // Populate group picker — filter to non-system groups
       var systemGroupIds = new Set([
@@ -481,8 +561,14 @@ geotab.addin.exceptionDashboard = function () {
     "#8bc34a", "#ff5722", "#607d8b", "#795548", "#cddc39"
   ];
 
+  function resolveRuleColor(ruleId, fallbackIndex) {
+    var custom = settings.get().ruleColors[ruleId];
+    if (custom) return custom;
+    return CHART_COLORS[fallbackIndex % CHART_COLORS.length];
+  }
+
   function buildChartData(orderedKeys, buckets, mode, seriesMeta) {
-    // seriesMeta: array of { id, label, stack, colorIndex }
+    // seriesMeta: array of { id, label, stack, colorIndex, ruleId }
     var labels = orderedKeys.slice();
     var datasets = [];
 
@@ -491,13 +577,14 @@ geotab.addin.exceptionDashboard = function () {
       var data = orderedKeys.map(function (key) {
         return (buckets[key] && buckets[key][s.id]) ? buckets[key][s.id] : 0;
       });
+      var color = resolveRuleColor(s.ruleId || s.id, s.colorIndex);
       var ds = {
         type: "bar",
         label: s.label,
         _ruleName: s.ruleLabel || s.label,
         data: data,
-        backgroundColor: CHART_COLORS[s.colorIndex % CHART_COLORS.length] + "CC",
-        borderColor: CHART_COLORS[s.colorIndex % CHART_COLORS.length],
+        backgroundColor: color + "CC",
+        borderColor: color,
         borderWidth: 1,
         order: 3
       };
@@ -988,6 +1075,7 @@ geotab.addin.exceptionDashboard = function () {
             var ruleName = ruleLabelMap[rid] || rid;
             seriesMeta.push({
               id: gid + "::" + rid,
+              ruleId: rid,
               label: groupName + " — " + ruleName,
               groupLabel: groupName,
               ruleLabel: ruleName,
@@ -1001,6 +1089,7 @@ geotab.addin.exceptionDashboard = function () {
         selectedRules.forEach(function (rid, idx) {
           seriesMeta.push({
             id: rid,
+            ruleId: rid,
             label: ruleLabelMap[rid] || rid,
             ruleLabel: ruleLabelMap[rid] || rid,
             stack: "company",
@@ -1031,6 +1120,194 @@ geotab.addin.exceptionDashboard = function () {
       els.generateBtn.disabled = false;
       setStatus("Error: " + (err.message || err));
       console.error("generate error:", err);
+    });
+  }
+
+  // ─── Settings Panel ───
+
+  function openSettingsPanel() {
+    populateSettingsPanel();
+    els.settingsPanel.classList.add("open");
+    els.settingsBackdrop.classList.add("open");
+  }
+
+  function closeSettingsPanel() {
+    els.settingsPanel.classList.remove("open");
+    els.settingsBackdrop.classList.remove("open");
+  }
+
+  function populateSettingsPanel() {
+    populateDefaultRulesSection();
+    populateRuleColorsSection();
+    renderViewsList();
+  }
+
+  function populateDefaultRulesSection() {
+    var listEl = els.settingsRuleList;
+    var searchEl = els.settingsRuleSearch;
+    var defaults = new Set(settings.get().defaultRules);
+    var ruleItems = rulePicker.getItems();
+
+    function renderList() {
+      var filt = (searchEl.value || "").toLowerCase();
+      listEl.innerHTML = "";
+      ruleItems.forEach(function (item) {
+        if (filt && item.label.toLowerCase().indexOf(filt) < 0) return;
+        var row = document.createElement("div");
+        row.className = "exd-settings-rule-row";
+        var cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = defaults.has(item.value);
+        cb.addEventListener("change", function () {
+          if (cb.checked) defaults.add(item.value);
+          else defaults.delete(item.value);
+        });
+        var nameSpan = document.createElement("span");
+        nameSpan.className = "exd-settings-rule-name";
+        nameSpan.textContent = item.label;
+        row.appendChild(cb);
+        row.appendChild(nameSpan);
+        listEl.appendChild(row);
+      });
+    }
+
+    renderList();
+    searchEl.oninput = renderList;
+
+    // Save button handler
+    els.settingsSaveDefaults.onclick = function () {
+      settings.setDefaultRules(Array.from(defaults));
+      els.settingsSaveDefaults.textContent = "Saved!";
+      setTimeout(function () { els.settingsSaveDefaults.textContent = "Save as Defaults"; }, 1200);
+    };
+  }
+
+  function populateRuleColorsSection() {
+    var listEl = els.settingsColorList;
+    var searchEl = els.settingsColorSearch;
+    var ruleItems = rulePicker.getItems();
+    var ruleColors = settings.get().ruleColors;
+
+    function renderList() {
+      var filt = (searchEl.value || "").toLowerCase();
+      listEl.innerHTML = "";
+      ruleItems.forEach(function (item, idx) {
+        if (filt && item.label.toLowerCase().indexOf(filt) < 0) return;
+        var row = document.createElement("div");
+        row.className = "exd-settings-rule-row";
+        var colorInput = document.createElement("input");
+        colorInput.type = "color";
+        colorInput.value = ruleColors[item.value] || CHART_COLORS[idx % CHART_COLORS.length];
+        colorInput.addEventListener("change", function () {
+          settings.setRuleColor(item.value, colorInput.value);
+          ruleColors = settings.get().ruleColors;
+          rulePicker.refresh();
+        });
+        var nameSpan = document.createElement("span");
+        nameSpan.className = "exd-settings-rule-name";
+        nameSpan.textContent = item.label;
+        var resetBtn = document.createElement("button");
+        resetBtn.type = "button";
+        resetBtn.className = "exd-settings-reset-color";
+        resetBtn.textContent = "Reset";
+        resetBtn.addEventListener("click", function () {
+          settings.clearRuleColor(item.value);
+          ruleColors = settings.get().ruleColors;
+          colorInput.value = CHART_COLORS[idx % CHART_COLORS.length];
+          rulePicker.refresh();
+        });
+        row.appendChild(colorInput);
+        row.appendChild(nameSpan);
+        row.appendChild(resetBtn);
+        listEl.appendChild(row);
+      });
+    }
+
+    renderList();
+    searchEl.oninput = renderList;
+  }
+
+  function captureView(name) {
+    var granularity = document.querySelector("#exd-root .exd-gran-btn.active").dataset.gran;
+    var viewMode = document.querySelector("#exd-root .exd-view-btn.active").dataset.view;
+    return {
+      id: "v" + Date.now(),
+      name: name,
+      rules: rulePicker.getSelected(),
+      fromDate: els.fromDate.value,
+      toDate: els.toDate.value,
+      granularity: granularity,
+      viewMode: viewMode,
+      groups: groupPicker.getSelected()
+    };
+  }
+
+  function applyView(view) {
+    // Rules
+    if (view.rules) rulePicker.setSelected(view.rules);
+    // Dates
+    if (view.fromDate) els.fromDate.value = view.fromDate;
+    if (view.toDate) els.toDate.value = view.toDate;
+    // Granularity
+    if (view.granularity) {
+      document.querySelectorAll("#exd-root .exd-gran-btn").forEach(function (b) {
+        b.classList.toggle("active", b.dataset.gran === view.granularity);
+      });
+    }
+    // View mode
+    if (view.viewMode) {
+      document.querySelectorAll("#exd-root .exd-view-btn").forEach(function (b) {
+        b.classList.toggle("active", b.dataset.view === view.viewMode);
+      });
+      var groupWrap = document.querySelector("#exd-root .exd-group-picker-wrap");
+      groupWrap.style.display = view.viewMode === "groups" ? "" : "none";
+    }
+    // Groups
+    if (view.groups) groupPicker.setSelected(view.groups);
+    closeSettingsPanel();
+  }
+
+  function renderViewsList() {
+    var listEl = els.settingsViewsList;
+    var views = settings.get().views;
+    listEl.innerHTML = "";
+
+    if (views.length === 0) {
+      var empty = document.createElement("div");
+      empty.style.cssText = "font-size:12px;color:#999;padding:8px 0;";
+      empty.textContent = "No saved views yet.";
+      listEl.appendChild(empty);
+      return;
+    }
+
+    views.forEach(function (view) {
+      var item = document.createElement("div");
+      item.className = "exd-settings-view-item";
+
+      var nameSpan = document.createElement("span");
+      nameSpan.className = "exd-settings-view-name";
+      nameSpan.textContent = view.name;
+      nameSpan.title = view.name;
+
+      var loadBtn = document.createElement("button");
+      loadBtn.type = "button";
+      loadBtn.className = "exd-settings-view-load";
+      loadBtn.textContent = "Load";
+      loadBtn.addEventListener("click", function () { applyView(view); });
+
+      var deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "exd-settings-view-delete";
+      deleteBtn.textContent = "Delete";
+      deleteBtn.addEventListener("click", function () {
+        settings.deleteView(view.id);
+        renderViewsList();
+      });
+
+      item.appendChild(nameSpan);
+      item.appendChild(loadBtn);
+      item.appendChild(deleteBtn);
+      listEl.appendChild(item);
     });
   }
 
@@ -1074,6 +1351,21 @@ geotab.addin.exceptionDashboard = function () {
     document.addEventListener("click", function () {
       closeAllDropdowns();
     });
+
+    // Settings panel
+    els.settingsBtn.addEventListener("click", openSettingsPanel);
+    els.settingsClose.addEventListener("click", closeSettingsPanel);
+    els.settingsBackdrop.addEventListener("click", closeSettingsPanel);
+
+    // Save view
+    els.settingsSaveView.addEventListener("click", function () {
+      var name = els.settingsViewName.value.trim();
+      if (!name) return;
+      var view = captureView(name);
+      settings.saveView(view);
+      els.settingsViewName.value = "";
+      renderViewsList();
+    });
   }
 
   // ─── Set Default Dates ───
@@ -1091,6 +1383,10 @@ geotab.addin.exceptionDashboard = function () {
   return {
     initialize: function (freshApi, state, callback) {
       api = freshApi;
+
+      // Init settings (use database name from state, or hostname)
+      var dbName = (state && state.database) ? state.database : location.hostname;
+      settings.init(dbName);
 
       // Cache DOM elements
       els.loading = $("exd-loading");
@@ -1112,8 +1408,29 @@ geotab.addin.exceptionDashboard = function () {
       els.kpiPeriod = $("exd-kpi-period");
       els.kpiRules = $("exd-kpi-rules");
 
-      // Init multi-select widgets
-      rulePicker = initMultiSelect({ id: "exd-rule-picker", placeholder: "Select rules..." });
+      // Settings panel elements
+      els.settingsBtn = $("exd-settings-btn");
+      els.settingsPanel = $("exd-settings-panel");
+      els.settingsBackdrop = $("exd-settings-backdrop");
+      els.settingsClose = $("exd-settings-close");
+      els.settingsRuleSearch = $("exd-settings-rule-search");
+      els.settingsRuleList = $("exd-settings-rule-list");
+      els.settingsSaveDefaults = $("exd-settings-save-defaults");
+      els.settingsColorSearch = $("exd-settings-color-search");
+      els.settingsColorList = $("exd-settings-color-list");
+      els.settingsViewName = $("exd-settings-view-name");
+      els.settingsSaveView = $("exd-settings-save-view");
+      els.settingsViewsList = $("exd-settings-views-list");
+
+      // Init multi-select widgets (with color callback for rule picker)
+      rulePicker = initMultiSelect({
+        id: "exd-rule-picker",
+        placeholder: "Select rules...",
+        getColor: function (ruleId) {
+          var colors = settings.get().ruleColors;
+          return colors[ruleId] || null;
+        }
+      });
       groupPicker = initMultiSelect({ id: "exd-group-picker", placeholder: "Select groups..." });
 
       // Bind events
