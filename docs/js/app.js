@@ -470,6 +470,68 @@ geotab.addin.exceptionDashboard = function () {
     });
   }
 
+  // ─── Fetch Trips (for mileage) ───
+
+  function fetchTrips(fromDate, toDate, onProgress) {
+    var MAX_DAYS = 14;
+    var BATCH_SIZE = 10;
+    var RESULT_LIMIT = 50000;
+    var chunks = splitDateRange(fromDate, toDate, MAX_DAYS);
+
+    var allCalls = chunks.map(function (chunk) {
+      return ["Get", {
+        typeName: "Trip",
+        search: {
+          fromDate: toISODate(chunk.from),
+          toDate: toISODate(chunk.to)
+        },
+        resultsLimit: RESULT_LIMIT
+      }];
+    });
+
+    var batches = [];
+    for (var i = 0; i < allCalls.length; i += BATCH_SIZE) {
+      batches.push(allCalls.slice(i, i + BATCH_SIZE));
+    }
+
+    var allTrips = [];
+    var completedBatches = 0;
+    var totalBatches = batches.length;
+
+    return batches.reduce(function (chain, batch, idx) {
+      return chain.then(function () {
+        if (isAborted()) return;
+        var pause = idx > 0 ? delay(200) : Promise.resolve();
+        return pause.then(function () {
+          if (isAborted()) return;
+          return apiMultiCall(batch).then(function (results) {
+            results.forEach(function (arr) {
+              if (arr && arr.length) {
+                allTrips = allTrips.concat(arr);
+              }
+            });
+            completedBatches++;
+            if (onProgress) onProgress(completedBatches / totalBatches * 100);
+          });
+        });
+      });
+    }, Promise.resolve()).then(function () {
+      return allTrips;
+    });
+  }
+
+  function aggregateMileageByPeriod(trips, mode) {
+    // Returns { bucketKey -> totalKm }
+    var mileage = {};
+    trips.forEach(function (trip) {
+      if (!trip.start || !trip.distance) return;
+      var key = getBucketKey(trip.start, mode);
+      if (!mileage[key]) mileage[key] = 0;
+      mileage[key] += trip.distance; // distance is in km
+    });
+    return mileage;
+  }
+
   // ─── Aggregation ───
 
   function getBucketKey(dateStr, mode) {
@@ -567,7 +629,7 @@ geotab.addin.exceptionDashboard = function () {
     return CHART_COLORS[fallbackIndex % CHART_COLORS.length];
   }
 
-  function buildChartData(orderedKeys, buckets, mode, seriesMeta) {
+  function buildChartData(orderedKeys, buckets, mode, seriesMeta, mileageByPeriod) {
     // seriesMeta: array of { id, label, stack, colorIndex, ruleId }
     var labels = orderedKeys.slice();
     var datasets = [];
@@ -586,7 +648,7 @@ geotab.addin.exceptionDashboard = function () {
         backgroundColor: color + "CC",
         borderColor: color,
         borderWidth: 1,
-        order: 3
+        order: 4
       };
       if (s.stack) ds.stack = s.stack;
       datasets.push(ds);
@@ -613,7 +675,7 @@ geotab.addin.exceptionDashboard = function () {
       pointBackgroundColor: "#333",
       tension: 0.3,
       yAxisID: "y",
-      order: 1
+      order: 2
     });
 
     // % Change line (period-over-period on total)
@@ -636,8 +698,35 @@ geotab.addin.exceptionDashboard = function () {
       pointBackgroundColor: "#e74c3c",
       tension: 0.3,
       yAxisID: "y1",
-      order: 0
+      order: 1
     });
+
+    // Events per 1k miles trend line
+    if (mileageByPeriod) {
+      var KM_PER_MILE = 1.60934;
+      var per1kData = orderedKeys.map(function (key, i) {
+        var events = totalData[i];
+        var km = mileageByPeriod[key] || 0;
+        if (km === 0) return null;
+        var miles = km / KM_PER_MILE;
+        return Math.round((events / miles) * 10000) / 10; // per 1k miles, one decimal
+      });
+
+      datasets.push({
+        type: "line",
+        label: "Events / 1k mi",
+        data: per1kData,
+        borderColor: "#9b59b6",
+        backgroundColor: "transparent",
+        borderWidth: 2,
+        borderDash: [8, 4],
+        pointRadius: 3,
+        pointBackgroundColor: "#9b59b6",
+        tension: 0.3,
+        yAxisID: "y2",
+        order: 0
+      });
+    }
 
     // Collect unique stack (group) names in order for the plugin
     var stackNames = [];
@@ -649,7 +738,7 @@ geotab.addin.exceptionDashboard = function () {
       }
     });
 
-    return { labels: labels, datasets: datasets, _stackNames: stackNames };
+    return { labels: labels, datasets: datasets, _stackNames: stackNames, _hasY2: !!mileageByPeriod };
   }
 
   // Chart.js plugin to draw group name labels above each stack cluster
@@ -797,6 +886,9 @@ geotab.addin.exceptionDashboard = function () {
                 if (ctx.dataset.yAxisID === "y1" && val != null) {
                   return label + ": " + val + "%";
                 }
+                if (ctx.dataset.yAxisID === "y2" && val != null) {
+                  return label + ": " + val;
+                }
                 return label + ": " + (val != null ? val.toLocaleString() : "—");
               }
             }
@@ -820,6 +912,16 @@ geotab.addin.exceptionDashboard = function () {
             ticks: {
               color: "#e74c3c",
               callback: function (v) { return v + "%"; }
+            },
+            grid: { drawOnChartArea: false }
+          },
+          y2: {
+            display: chartData._hasY2 || false,
+            position: "right",
+            title: { display: true, text: "Events / 1k mi", font: { size: 12 }, color: "#9b59b6" },
+            ticks: {
+              color: "#9b59b6",
+              precision: 1
             },
             grid: { drawOnChartArea: false }
           }
@@ -1031,10 +1133,20 @@ geotab.addin.exceptionDashboard = function () {
     setStatus("");
     els.generateBtn.disabled = true;
 
-    fetchExceptionEvents(selectedRules, fromDate, toDate, function (pct) {
-      setProgress(pct);
-      els.loadingText.textContent = "Fetching... " + Math.round(pct) + "%";
-    }).then(function (result) {
+    // Fetch events and trips in parallel
+    var eventsProm = fetchExceptionEvents(selectedRules, fromDate, toDate, function (pct) {
+      setProgress(pct * 0.8); // events = 80% of progress
+      els.loadingText.textContent = "Fetching events... " + Math.round(pct * 0.8) + "%";
+    });
+
+    els.loadingText.textContent = "Fetching events and trips...";
+    var tripsProm = fetchTrips(fromDate, toDate, function (pct) {
+      setProgress(80 + pct * 0.2); // trips = last 20%
+    });
+
+    Promise.all([eventsProm, tripsProm]).then(function (results) {
+      var result = results[0];
+      var trips = results[1];
       if (isAborted()) return;
       showLoading(false);
       els.generateBtn.disabled = false;
@@ -1062,8 +1174,11 @@ geotab.addin.exceptionDashboard = function () {
       var groupLabelMap = {};
       allGroups.forEach(function (g) { groupLabelMap[g.id] = g.name; });
 
-      // Aggregate
+      // Aggregate events
       var agg = aggregateEvents(result.events, selectedRules, selectedGroups, granularity, viewMode);
+
+      // Aggregate trip mileage by period
+      var mileageByPeriod = aggregateMileageByPeriod(trips, granularity);
 
       // Build series metadata
       var seriesMeta = [];
@@ -1098,8 +1213,8 @@ geotab.addin.exceptionDashboard = function () {
         });
       }
 
-      // Chart
-      var chartData = buildChartData(agg.orderedKeys, agg.buckets, granularity, seriesMeta);
+      // Chart (pass mileage for events/1k miles line)
+      var chartData = buildChartData(agg.orderedKeys, agg.buckets, granularity, seriesMeta, mileageByPeriod);
       renderChart(chartData);
 
       // Table
