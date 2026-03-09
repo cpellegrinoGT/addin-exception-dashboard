@@ -75,6 +75,7 @@
 
     <span id="exd-status" class="exd-status-text"></span>
     <button type="button" id="exd-settings-btn" class="exd-settings-btn" title="Settings">&#9881;</button>
+    <button type="button" id="exd-email-btn" class="exd-email-btn" disabled title="Email Report">&#9993;</button>
   </div>
 
   <!-- KPI Strip -->
@@ -146,6 +147,9 @@
   <!-- Settings Backdrop -->
   <div id="exd-settings-backdrop" class="exd-settings-backdrop"></div>
 
+  <!-- Email Backdrop -->
+  <div id="exd-email-backdrop" class="exd-settings-backdrop"></div>
+
   <!-- Settings Panel -->
   <div id="exd-settings-panel" class="exd-settings-panel">
     <div class="exd-settings-header">
@@ -180,6 +184,44 @@
           <button type="button" id="exd-settings-save-view" class="exd-btn-primary">Save Current</button>
         </div>
         <div id="exd-settings-views-list" class="exd-settings-views-list"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Email Panel -->
+  <div id="exd-email-panel" class="exd-settings-panel">
+    <div class="exd-settings-header">
+      <span class="exd-settings-title">Email Report</span>
+      <button type="button" id="exd-email-close" class="exd-settings-close">&times;</button>
+    </div>
+    <div class="exd-settings-body">
+
+      <div class="exd-settings-section">
+        <h3 class="exd-settings-section-title">To</h3>
+        <input type="text" id="exd-email-to" class="exd-input exd-email-full-width" placeholder="recipient@example.com, ...">
+      </div>
+
+      <div class="exd-settings-section">
+        <h3 class="exd-settings-section-title">Subject</h3>
+        <input type="text" id="exd-email-subject" class="exd-input exd-email-full-width">
+      </div>
+
+      <div class="exd-settings-section">
+        <h3 class="exd-settings-section-title">Body</h3>
+        <textarea id="exd-email-body" class="exd-input exd-email-full-width exd-email-textarea"></textarea>
+      </div>
+
+      <div class="exd-settings-section">
+        <h3 class="exd-settings-section-title">Attachments</h3>
+        <p class="exd-settings-section-desc">Download files to attach manually in your email client.</p>
+        <button type="button" id="exd-email-dl-csv" class="exd-btn-secondary exd-email-full-width" style="margin-bottom:8px">Download CSV</button>
+        <button type="button" id="exd-email-dl-chart" class="exd-btn-secondary exd-email-full-width">Download Chart Image</button>
+      </div>
+
+      <div class="exd-settings-section">
+        <button type="button" id="exd-email-open" class="exd-btn-primary exd-email-full-width">Open in Email Client</button>
+        <p class="exd-settings-section-desc" style="margin-top:8px">Opens your default email app with the To, Subject, and Body pre-filled. Attach the downloaded files before sending.</p>
       </div>
 
     </div>

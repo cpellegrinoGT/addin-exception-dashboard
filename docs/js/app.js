@@ -1057,6 +1057,42 @@ geotab.addin.exceptionDashboard = function () {
     URL.revokeObjectURL(url);
   }
 
+  // ─── Chart Image Export ───
+
+  function exportChartImage() {
+    if (!els.chart) return;
+    var dataUrl = els.chart.toDataURL("image/png");
+    var byteString = atob(dataUrl.split(",")[1]);
+    var mimeString = dataUrl.split(",")[0].split(":")[1].split(";")[0];
+    var ab = new ArrayBuffer(byteString.length);
+    var ia = new Uint8Array(ab);
+    for (var i = 0; i < byteString.length; i++) {
+      ia[i] = byteString.charCodeAt(i);
+    }
+    var blob = new Blob([ab], { type: mimeString });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "exception_chart_" + formatDate(new Date()) + ".png";
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // ─── Email Client ───
+
+  function openEmailClient() {
+    var to = els.emailTo.value.trim();
+    var subject = els.emailSubject.value;
+    var body = els.emailBody.value;
+    var mailto = "mailto:" + encodeURIComponent(to) +
+      "?subject=" + encodeURIComponent(subject) +
+      "&body=" + encodeURIComponent(body);
+    window.location.href = mailto;
+  }
+
   // ─── Generate (main flow) ───
 
   function generate() {
@@ -1119,6 +1155,7 @@ geotab.addin.exceptionDashboard = function () {
       if (result.events.length === 0) {
         showLoading(false);
         els.generateBtn.disabled = false;
+        els.emailBtn.disabled = true;
         showEmpty(true);
         els.kpiTotal.textContent = "0";
         els.kpiDevices.textContent = "0";
@@ -1207,6 +1244,7 @@ geotab.addin.exceptionDashboard = function () {
         if (tripResult.tripCount > 0) statusParts.push(tripResult.tripCount.toLocaleString() + " trips");
         if (mileageByPeriod) statusParts.push("mileage \u2713");
         setStatus("Loaded " + statusParts.join(", "));
+        els.emailBtn.disabled = false;
       }); // end trips .then
     }).catch(function (err) {
       if (isAborted()) return;
@@ -1228,6 +1266,36 @@ geotab.addin.exceptionDashboard = function () {
   function closeSettingsPanel() {
     els.settingsPanel.classList.remove("open");
     els.settingsBackdrop.classList.remove("open");
+  }
+
+  // ─── Email Panel ───
+
+  function openEmailPanel() {
+    populateEmailPanel();
+    els.emailPanel.classList.add("open");
+    els.emailBackdrop.classList.add("open");
+  }
+
+  function closeEmailPanel() {
+    els.emailPanel.classList.remove("open");
+    els.emailBackdrop.classList.remove("open");
+  }
+
+  function populateEmailPanel() {
+    var total = els.kpiTotal.textContent;
+    var devices = els.kpiDevices.textContent;
+    var period = els.kpiPeriod.textContent;
+    var rules = els.kpiRules.textContent;
+    els.emailSubject.value = "Exception Dashboard Report \u2014 " + period;
+    els.emailBody.value =
+      "Hi,\n\n" +
+      "Please find the Exception Dashboard report attached.\n\n" +
+      "Summary:\n" +
+      "  Total Events: " + total + "\n" +
+      "  Unique Devices: " + devices + "\n" +
+      "  Period: " + period + "\n" +
+      "  Rules Selected: " + rules + "\n\n" +
+      "Best regards";
   }
 
   function populateSettingsPanel() {
@@ -1451,6 +1519,14 @@ geotab.addin.exceptionDashboard = function () {
     els.settingsClose.addEventListener("click", closeSettingsPanel);
     els.settingsBackdrop.addEventListener("click", closeSettingsPanel);
 
+    // Email panel
+    els.emailBtn.addEventListener("click", openEmailPanel);
+    els.emailClose.addEventListener("click", closeEmailPanel);
+    els.emailBackdrop.addEventListener("click", closeEmailPanel);
+    els.emailDlCsv.addEventListener("click", exportCsv);
+    els.emailDlChart.addEventListener("click", exportChartImage);
+    els.emailOpen.addEventListener("click", openEmailClient);
+
     // Save view
     els.settingsSaveView.addEventListener("click", function () {
       var name = els.settingsViewName.value.trim();
@@ -1515,6 +1591,18 @@ geotab.addin.exceptionDashboard = function () {
       els.settingsViewName = $("exd-settings-view-name");
       els.settingsSaveView = $("exd-settings-save-view");
       els.settingsViewsList = $("exd-settings-views-list");
+
+      // Email panel elements
+      els.emailBtn = $("exd-email-btn");
+      els.emailPanel = $("exd-email-panel");
+      els.emailBackdrop = $("exd-email-backdrop");
+      els.emailClose = $("exd-email-close");
+      els.emailTo = $("exd-email-to");
+      els.emailSubject = $("exd-email-subject");
+      els.emailBody = $("exd-email-body");
+      els.emailDlCsv = $("exd-email-dl-csv");
+      els.emailDlChart = $("exd-email-dl-chart");
+      els.emailOpen = $("exd-email-open");
 
       // Init multi-select widgets (with color callback for rule picker)
       rulePicker = initMultiSelect({

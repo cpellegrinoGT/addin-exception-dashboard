@@ -801,3 +801,49 @@
   border-radius: 50%;
   flex-shrink: 0;
 }
+
+/* ── Email button (envelope icon in toolbar) ── */
+
+#exd-root .exd-email-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: #fff;
+  font-size: 18px;
+  color: #666;
+  cursor: pointer;
+  align-self: center;
+  flex-shrink: 0;
+  margin-left: 4px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+#exd-root .exd-email-btn:hover:not(:disabled) {
+  color: #4a90d9;
+  border-color: #4a90d9;
+}
+
+#exd-root .exd-email-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ── Email panel utilities ── */
+
+.exd-email-full-width {
+  width: 100%;
+  display: block;
+}
+
+.exd-email-textarea {
+  height: 120px;
+  resize: vertical;
+  padding: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+}
