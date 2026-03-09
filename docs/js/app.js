@@ -470,25 +470,26 @@ geotab.addin.exceptionDashboard = function () {
     });
   }
 
-  // ─── Fetch Odometer Data (for mileage) ───
+  // ─── Fetch Trip Mileage ───
 
-  function fetchOdometerData(deviceIds, fromDate, toDate, onProgress) {
-    // Get StatusData for odometer diagnostic — much lighter than Trip objects.
-    // Returns array of { deviceId, dateTime, data (meters) } readings.
+  function fetchTripMileage(deviceIds, fromDate, toDate, granularity, onProgress) {
+    // Fetch Trip objects per device and aggregate distance inline.
+    // Trip.distance is in km. We sum into { bucketKey: totalKm } during
+    // the fetch itself so we never hold all trip objects in memory.
     var BATCH_SIZE = 20;
-    var RESULT_LIMIT = 5000;
+    var mileage = {};
+    var tripCount = 0;
+    var hasData = false;
 
     var allCalls = [];
     deviceIds.forEach(function (devId) {
       allCalls.push(["Get", {
-        typeName: "StatusData",
+        typeName: "Trip",
         search: {
           fromDate: toISODate(fromDate),
           toDate: toISODate(toDate),
-          deviceSearch: { id: devId },
-          diagnosticSearch: { id: "DiagnosticOdometerId" }
-        },
-        resultsLimit: RESULT_LIMIT
+          deviceSearch: { id: devId }
+        }
       }]);
     });
 
@@ -497,7 +498,6 @@ geotab.addin.exceptionDashboard = function () {
       batches.push(allCalls.slice(i, i + BATCH_SIZE));
     }
 
-    var allReadings = [];
     var completedBatches = 0;
     var totalBatches = batches.length;
 
@@ -508,10 +508,16 @@ geotab.addin.exceptionDashboard = function () {
         return pause.then(function () {
           if (isAborted()) return;
           return apiMultiCall(batch).then(function (results) {
-            results.forEach(function (arr) {
-              if (arr && arr.length) {
-                allReadings = allReadings.concat(arr);
-              }
+            results.forEach(function (trips) {
+              if (!trips || !trips.length) return;
+              tripCount += trips.length;
+              trips.forEach(function (trip) {
+                if (!trip.start || typeof trip.distance !== "number" || trip.distance <= 0) return;
+                var key = getBucketKey(trip.start, granularity);
+                if (!mileage[key]) mileage[key] = 0;
+                mileage[key] += trip.distance;
+                hasData = true;
+              });
             });
             completedBatches++;
             if (onProgress) onProgress(completedBatches / totalBatches * 100);
@@ -519,44 +525,8 @@ geotab.addin.exceptionDashboard = function () {
         });
       });
     }, Promise.resolve()).then(function () {
-      return allReadings;
+      return { mileage: hasData ? mileage : null, tripCount: tripCount };
     });
-  }
-
-  function aggregateMileageByPeriod(odometerReadings, mode) {
-    // Group readings by device+period, compute delta (max - min) per period per device,
-    // then sum across devices per period. Returns { bucketKey -> totalKm } or null.
-    // StatusData odometer value (.data) is in meters.
-    var devicePeriods = {}; // "deviceId::bucketKey" -> { min, max }
-
-    odometerReadings.forEach(function (r) {
-      if (!r.dateTime || typeof r.data !== "number") return;
-      var devId = r.device ? r.device.id : null;
-      if (!devId) return;
-      var key = getBucketKey(r.dateTime, mode);
-      var compoundKey = devId + "::" + key;
-      if (!devicePeriods[compoundKey]) {
-        devicePeriods[compoundKey] = { key: key, min: r.data, max: r.data };
-      } else {
-        var dp = devicePeriods[compoundKey];
-        if (r.data < dp.min) dp.min = r.data;
-        if (r.data > dp.max) dp.max = r.data;
-      }
-    });
-
-    var mileage = {};
-    var hasData = false;
-    Object.keys(devicePeriods).forEach(function (ck) {
-      var dp = devicePeriods[ck];
-      var deltaMeters = dp.max - dp.min;
-      if (deltaMeters <= 0) return;
-      var deltaKm = deltaMeters / 1000;
-      if (!mileage[dp.key]) mileage[dp.key] = 0;
-      mileage[dp.key] += deltaKm;
-      hasData = true;
-    });
-
-    return hasData ? mileage : null;
   }
 
   // ─── Aggregation ───
@@ -1193,19 +1163,19 @@ geotab.addin.exceptionDashboard = function () {
       });
       var deviceIdArray = Array.from(eventDeviceIds);
 
-      // Step 2: Fetch odometer data for those devices (non-fatal)
-      els.loadingText.textContent = "Fetching odometer for " + deviceIdArray.length + " devices...";
+      // Step 2: Fetch trip mileage for those devices (non-fatal)
+      els.loadingText.textContent = "Fetching trips for " + deviceIdArray.length + " devices...";
       setProgress(70);
 
-      return fetchOdometerData(deviceIdArray, fromDate, toDate, function (pct) {
+      return fetchTripMileage(deviceIdArray, fromDate, toDate, granularity, function (pct) {
         setProgress(70 + pct * 0.3);
-        els.loadingText.textContent = "Fetching odometer... " + Math.round(70 + pct * 0.3) + "%";
+        els.loadingText.textContent = "Fetching trips... " + Math.round(70 + pct * 0.3) + "%";
       }).catch(function (err) {
-        console.warn("Odometer fetch failed (non-fatal):", err);
-        return [];
-      }).then(function (odometerReadings) {
+        console.warn("Trip mileage fetch failed (non-fatal):", err);
+        return { mileage: null, tripCount: 0 };
+      }).then(function (tripResult) {
         if (isAborted()) return;
-        odometerReadings = odometerReadings || [];
+        tripResult = tripResult || { mileage: null, tripCount: 0 };
         showLoading(false);
         els.generateBtn.disabled = false;
 
@@ -1218,8 +1188,8 @@ geotab.addin.exceptionDashboard = function () {
         // Aggregate events
         var agg = aggregateEvents(result.events, selectedRules, selectedGroups, granularity, viewMode);
 
-        // Aggregate odometer mileage by period
-        var mileageByPeriod = aggregateMileageByPeriod(odometerReadings, granularity);
+        // Trip mileage already aggregated by period during fetch
+        var mileageByPeriod = tripResult.mileage;
 
         // Build series metadata
         var seriesMeta = [];
@@ -1268,7 +1238,7 @@ geotab.addin.exceptionDashboard = function () {
         renderKpis(agg, selectedRules.length, fromDate, toDate);
 
         var statusParts = [result.events.length.toLocaleString() + " events"];
-        if (odometerReadings.length > 0) statusParts.push(odometerReadings.length.toLocaleString() + " odo readings");
+        if (tripResult.tripCount > 0) statusParts.push(tripResult.tripCount.toLocaleString() + " trips");
         if (mileageByPeriod) statusParts.push("mileage \u2713");
         setStatus("Loaded " + statusParts.join(", "));
       }); // end trips .then
