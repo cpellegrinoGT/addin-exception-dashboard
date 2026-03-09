@@ -521,15 +521,19 @@ geotab.addin.exceptionDashboard = function () {
   }
 
   function aggregateMileageByPeriod(trips, mode) {
-    // Returns { bucketKey -> totalKm }
+    // Returns { bucketKey -> totalKm } or null if no mileage data
     var mileage = {};
+    var hasData = false;
     trips.forEach(function (trip) {
-      if (!trip.start || !trip.distance) return;
+      if (!trip.start) return;
+      var dist = trip.distance;
+      if (typeof dist !== "number" || dist <= 0) return;
       var key = getBucketKey(trip.start, mode);
       if (!mileage[key]) mileage[key] = 0;
-      mileage[key] += trip.distance; // distance is in km
+      mileage[key] += dist; // distance is in km
+      hasData = true;
     });
-    return mileage;
+    return hasData ? mileage : null;
   }
 
   // ─── Aggregation ───
@@ -1133,7 +1137,7 @@ geotab.addin.exceptionDashboard = function () {
     setStatus("");
     els.generateBtn.disabled = true;
 
-    // Fetch events and trips in parallel
+    // Fetch events and trips in parallel (trips are non-fatal)
     var eventsProm = fetchExceptionEvents(selectedRules, fromDate, toDate, function (pct) {
       setProgress(pct * 0.8); // events = 80% of progress
       els.loadingText.textContent = "Fetching events... " + Math.round(pct * 0.8) + "%";
@@ -1142,11 +1146,14 @@ geotab.addin.exceptionDashboard = function () {
     els.loadingText.textContent = "Fetching events and trips...";
     var tripsProm = fetchTrips(fromDate, toDate, function (pct) {
       setProgress(80 + pct * 0.2); // trips = last 20%
+    }).catch(function (err) {
+      console.warn("Trip fetch failed (non-fatal):", err);
+      return []; // degrade gracefully — no mileage line
     });
 
     Promise.all([eventsProm, tripsProm]).then(function (results) {
       var result = results[0];
-      var trips = results[1];
+      var trips = results[1] || [];
       if (isAborted()) return;
       showLoading(false);
       els.generateBtn.disabled = false;
@@ -1228,7 +1235,10 @@ geotab.addin.exceptionDashboard = function () {
       // KPIs
       renderKpis(agg, selectedRules.length, fromDate, toDate);
 
-      setStatus("Loaded " + result.events.length.toLocaleString() + " events");
+      var statusParts = [result.events.length.toLocaleString() + " events"];
+      if (trips.length > 0) statusParts.push(trips.length.toLocaleString() + " trips");
+      if (mileageByPeriod) statusParts.push("mileage \u2713");
+      setStatus("Loaded " + statusParts.join(", "));
     }).catch(function (err) {
       if (isAborted()) return;
       showLoading(false);
