@@ -472,59 +472,34 @@ geotab.addin.exceptionDashboard = function () {
 
   // ─── Fetch Trip Mileage ───
 
-  function fetchTripMileage(deviceIds, fromDate, toDate, granularity, onProgress) {
-    // Fetch Trip objects per device and aggregate distance inline.
-    // Trip.distance is in km. We sum into { bucketKey: totalKm } during
-    // the fetch itself so we never hold all trip objects in memory.
-    var BATCH_SIZE = 20;
+  function fetchTripMileage(fromDate, toDate, granularity, groupIds) {
+    // Single fleet-wide API call using group-based deviceSearch.
+    // Trip.distance is in km. We sum into { bucketKey: totalKm }.
     var mileage = {};
     var tripCount = 0;
     var hasData = false;
 
-    var allCalls = [];
-    deviceIds.forEach(function (devId) {
-      allCalls.push(["Get", {
-        typeName: "Trip",
-        search: {
-          fromDate: toISODate(fromDate),
-          toDate: toISODate(toDate),
-          deviceSearch: { id: devId }
+    return apiCall("Get", {
+      typeName: "Trip",
+      search: {
+        fromDate: toISODate(fromDate),
+        toDate: toISODate(toDate),
+        deviceSearch: {
+          groups: groupIds.map(function (id) { return { id: id }; })
         }
-      }]);
-    });
-
-    var batches = [];
-    for (var i = 0; i < allCalls.length; i += BATCH_SIZE) {
-      batches.push(allCalls.slice(i, i + BATCH_SIZE));
-    }
-
-    var completedBatches = 0;
-    var totalBatches = batches.length;
-
-    return batches.reduce(function (chain, batch, idx) {
-      return chain.then(function () {
-        if (isAborted()) return;
-        var pause = idx > 0 ? delay(200) : Promise.resolve();
-        return pause.then(function () {
-          if (isAborted()) return;
-          return apiMultiCall(batch).then(function (results) {
-            results.forEach(function (trips) {
-              if (!trips || !trips.length) return;
-              tripCount += trips.length;
-              trips.forEach(function (trip) {
-                if (!trip.start || typeof trip.distance !== "number" || trip.distance <= 0) return;
-                var key = getBucketKey(trip.start, granularity);
-                if (!mileage[key]) mileage[key] = 0;
-                mileage[key] += trip.distance;
-                hasData = true;
-              });
-            });
-            completedBatches++;
-            if (onProgress) onProgress(completedBatches / totalBatches * 100);
-          });
-        });
+      }
+    }).then(function (trips) {
+      if (!trips || !trips.length) {
+        return { mileage: null, tripCount: 0 };
+      }
+      tripCount = trips.length;
+      trips.forEach(function (trip) {
+        if (!trip.start || typeof trip.distance !== "number" || trip.distance <= 0) return;
+        var key = getBucketKey(trip.start, granularity);
+        if (!mileage[key]) mileage[key] = 0;
+        mileage[key] += trip.distance;
+        hasData = true;
       });
-    }, Promise.resolve()).then(function () {
       return { mileage: hasData ? mileage : null, tripCount: tripCount };
     });
   }
@@ -1156,21 +1131,12 @@ geotab.addin.exceptionDashboard = function () {
         return;
       }
 
-      // Collect unique device IDs from events
-      var eventDeviceIds = new Set();
-      result.events.forEach(function (evt) {
-        if (evt.device && evt.device.id) eventDeviceIds.add(evt.device.id);
-      });
-      var deviceIdArray = Array.from(eventDeviceIds);
-
-      // Step 2: Fetch trip mileage for those devices (non-fatal)
-      els.loadingText.textContent = "Fetching trips for " + deviceIdArray.length + " devices...";
+      // Step 2: Fetch trip mileage via single fleet-wide call (non-fatal)
+      var tripGroupIds = viewMode === "groups" ? selectedGroups : ["GroupCompanyId"];
+      els.loadingText.textContent = "Fetching trip mileage...";
       setProgress(70);
 
-      return fetchTripMileage(deviceIdArray, fromDate, toDate, granularity, function (pct) {
-        setProgress(70 + pct * 0.3);
-        els.loadingText.textContent = "Fetching trips... " + Math.round(70 + pct * 0.3) + "%";
-      }).catch(function (err) {
+      return fetchTripMileage(fromDate, toDate, granularity, tripGroupIds).catch(function (err) {
         console.warn("Trip mileage fetch failed (non-fatal):", err);
         return { mileage: null, tripCount: 0 };
       }).then(function (tripResult) {
