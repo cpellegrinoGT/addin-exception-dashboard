@@ -808,27 +808,29 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
   height: 34px;
+  padding: 0 12px;
   border: 1px solid #ddd;
   border-radius: 4px;
   background: #fff;
-  font-size: 18px;
-  color: #666;
+  font-size: 12px;
+  font-weight: 500;
+  color: #555;
   cursor: pointer;
   align-self: center;
   flex-shrink: 0;
   margin-left: 4px;
-  transition: color 0.15s, border-color 0.15s;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
 }
 
 #exd-root .exd-email-btn:hover:not(:disabled) {
   color: #4a90d9;
   border-color: #4a90d9;
+  background: #f5f6f8;
 }
 
 #exd-root .exd-email-btn:disabled {
-  opacity: 0.35;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
