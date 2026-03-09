@@ -470,21 +470,23 @@ geotab.addin.exceptionDashboard = function () {
     });
   }
 
-  // ─── Fetch Trips (for mileage) ───
+  // ─── Fetch Odometer Data (for mileage) ───
 
-  function fetchTripsForDevices(deviceIds, fromDate, toDate, onProgress) {
-    // Trip API requires a deviceSearch, so we build one call per device
+  function fetchOdometerData(deviceIds, fromDate, toDate, onProgress) {
+    // Get StatusData for odometer diagnostic — much lighter than Trip objects.
+    // Returns array of { deviceId, dateTime, data (meters) } readings.
     var BATCH_SIZE = 20;
-    var RESULT_LIMIT = 10000;
+    var RESULT_LIMIT = 5000;
 
     var allCalls = [];
     deviceIds.forEach(function (devId) {
       allCalls.push(["Get", {
-        typeName: "Trip",
+        typeName: "StatusData",
         search: {
           fromDate: toISODate(fromDate),
           toDate: toISODate(toDate),
-          deviceSearch: { id: devId }
+          deviceSearch: { id: devId },
+          diagnosticSearch: { id: "DiagnosticOdometerId" }
         },
         resultsLimit: RESULT_LIMIT
       }]);
@@ -495,7 +497,7 @@ geotab.addin.exceptionDashboard = function () {
       batches.push(allCalls.slice(i, i + BATCH_SIZE));
     }
 
-    var allTrips = [];
+    var allReadings = [];
     var completedBatches = 0;
     var totalBatches = batches.length;
 
@@ -508,7 +510,7 @@ geotab.addin.exceptionDashboard = function () {
           return apiMultiCall(batch).then(function (results) {
             results.forEach(function (arr) {
               if (arr && arr.length) {
-                allTrips = allTrips.concat(arr);
+                allReadings = allReadings.concat(arr);
               }
             });
             completedBatches++;
@@ -517,23 +519,43 @@ geotab.addin.exceptionDashboard = function () {
         });
       });
     }, Promise.resolve()).then(function () {
-      return allTrips;
+      return allReadings;
     });
   }
 
-  function aggregateMileageByPeriod(trips, mode) {
-    // Returns { bucketKey -> totalKm } or null if no mileage data
+  function aggregateMileageByPeriod(odometerReadings, mode) {
+    // Group readings by device+period, compute delta (max - min) per period per device,
+    // then sum across devices per period. Returns { bucketKey -> totalKm } or null.
+    // StatusData odometer value (.data) is in meters.
+    var devicePeriods = {}; // "deviceId::bucketKey" -> { min, max }
+
+    odometerReadings.forEach(function (r) {
+      if (!r.dateTime || typeof r.data !== "number") return;
+      var devId = r.device ? r.device.id : null;
+      if (!devId) return;
+      var key = getBucketKey(r.dateTime, mode);
+      var compoundKey = devId + "::" + key;
+      if (!devicePeriods[compoundKey]) {
+        devicePeriods[compoundKey] = { key: key, min: r.data, max: r.data };
+      } else {
+        var dp = devicePeriods[compoundKey];
+        if (r.data < dp.min) dp.min = r.data;
+        if (r.data > dp.max) dp.max = r.data;
+      }
+    });
+
     var mileage = {};
     var hasData = false;
-    trips.forEach(function (trip) {
-      if (!trip.start) return;
-      var dist = trip.distance;
-      if (typeof dist !== "number" || dist <= 0) return;
-      var key = getBucketKey(trip.start, mode);
-      if (!mileage[key]) mileage[key] = 0;
-      mileage[key] += dist; // distance is in km
+    Object.keys(devicePeriods).forEach(function (ck) {
+      var dp = devicePeriods[ck];
+      var deltaMeters = dp.max - dp.min;
+      if (deltaMeters <= 0) return;
+      var deltaKm = deltaMeters / 1000;
+      if (!mileage[dp.key]) mileage[dp.key] = 0;
+      mileage[dp.key] += deltaKm;
       hasData = true;
     });
+
     return hasData ? mileage : null;
   }
 
@@ -1171,19 +1193,19 @@ geotab.addin.exceptionDashboard = function () {
       });
       var deviceIdArray = Array.from(eventDeviceIds);
 
-      // Step 2: Fetch trips for those devices (non-fatal)
-      els.loadingText.textContent = "Fetching trips for " + deviceIdArray.length + " devices...";
+      // Step 2: Fetch odometer data for those devices (non-fatal)
+      els.loadingText.textContent = "Fetching odometer for " + deviceIdArray.length + " devices...";
       setProgress(70);
 
-      return fetchTripsForDevices(deviceIdArray, fromDate, toDate, function (pct) {
+      return fetchOdometerData(deviceIdArray, fromDate, toDate, function (pct) {
         setProgress(70 + pct * 0.3);
-        els.loadingText.textContent = "Fetching trips... " + Math.round(70 + pct * 0.3) + "%";
+        els.loadingText.textContent = "Fetching odometer... " + Math.round(70 + pct * 0.3) + "%";
       }).catch(function (err) {
-        console.warn("Trip fetch failed (non-fatal):", err);
+        console.warn("Odometer fetch failed (non-fatal):", err);
         return [];
-      }).then(function (trips) {
+      }).then(function (odometerReadings) {
         if (isAborted()) return;
-        trips = trips || [];
+        odometerReadings = odometerReadings || [];
         showLoading(false);
         els.generateBtn.disabled = false;
 
@@ -1196,8 +1218,8 @@ geotab.addin.exceptionDashboard = function () {
         // Aggregate events
         var agg = aggregateEvents(result.events, selectedRules, selectedGroups, granularity, viewMode);
 
-        // Aggregate trip mileage by period
-        var mileageByPeriod = aggregateMileageByPeriod(trips, granularity);
+        // Aggregate odometer mileage by period
+        var mileageByPeriod = aggregateMileageByPeriod(odometerReadings, granularity);
 
         // Build series metadata
         var seriesMeta = [];
@@ -1246,7 +1268,7 @@ geotab.addin.exceptionDashboard = function () {
         renderKpis(agg, selectedRules.length, fromDate, toDate);
 
         var statusParts = [result.events.length.toLocaleString() + " events"];
-        if (trips.length > 0) statusParts.push(trips.length.toLocaleString() + " trips");
+        if (odometerReadings.length > 0) statusParts.push(odometerReadings.length.toLocaleString() + " odo readings");
         if (mileageByPeriod) statusParts.push("mileage \u2713");
         setStatus("Loaded " + statusParts.join(", "));
       }); // end trips .then
