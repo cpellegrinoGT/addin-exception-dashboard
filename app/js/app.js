@@ -412,6 +412,61 @@ geotab.addin.exceptionDashboard = function () {
     return chunks;
   }
 
+  // ─── Time Bucket Generation ───
+
+  function generateTimeBuckets(fromDate, toDate, granularity) {
+    var buckets = [];
+    var cursor = new Date(fromDate.getTime());
+
+    if (granularity === "day") {
+      while (cursor < toDate) {
+        var dayEnd = new Date(cursor);
+        dayEnd.setDate(dayEnd.getDate() + 1);
+        if (dayEnd > toDate) dayEnd = new Date(toDate.getTime());
+        buckets.push({
+          from: new Date(cursor),
+          to: dayEnd,
+          key: formatDate(cursor)
+        });
+        cursor = dayEnd;
+      }
+    } else if (granularity === "week") {
+      // Align to ISO week start (Monday)
+      var start = new Date(cursor);
+      var day = start.getDay();
+      var diff = day === 0 ? -6 : 1 - day;
+      start.setDate(start.getDate() + diff);
+      cursor = start < fromDate ? new Date(fromDate.getTime()) : start;
+      var weekCursor = new Date(start);
+
+      while (weekCursor < toDate) {
+        var weekEnd = new Date(weekCursor);
+        weekEnd.setDate(weekEnd.getDate() + 7);
+        var bucketFrom = weekCursor < fromDate ? new Date(fromDate.getTime()) : new Date(weekCursor);
+        var bucketTo = weekEnd > toDate ? new Date(toDate.getTime()) : weekEnd;
+        buckets.push({
+          from: bucketFrom,
+          to: bucketTo,
+          key: "W" + formatDate(weekCursor)
+        });
+        weekCursor = weekEnd;
+      }
+    } else {
+      // month
+      while (cursor < toDate) {
+        var monthEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+        var bucketTo = monthEnd > toDate ? new Date(toDate.getTime()) : monthEnd;
+        buckets.push({
+          from: new Date(cursor),
+          to: bucketTo,
+          key: cursor.getFullYear() + "-" + String(cursor.getMonth() + 1).padStart(2, "0")
+        });
+        cursor = monthEnd;
+      }
+    }
+    return buckets;
+  }
+
   // ─── Fetch Exception Events ───
 
   function fetchExceptionEvents(ruleIds, fromDate, toDate, onProgress) {
@@ -470,36 +525,146 @@ geotab.addin.exceptionDashboard = function () {
     });
   }
 
+  // ─── Fetch Exception Summary (optimized) ───
+
+  function fetchExceptionSummary(ruleIds, fromDate, toDate, granularity, groupIds, viewMode, onProgress) {
+    var buckets = generateTimeBuckets(fromDate, toDate, granularity);
+    var userTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+    // Build one GetGroupedExceptionSummary call per bucket
+    var calls = buckets.map(function (bucket) {
+      return ["GetGroupedExceptionSummary", {
+        argument: {
+          fromUtc: bucket.from.toISOString(),
+          toUtc: bucket.to.toISOString(),
+          exceptionRulesForZoneOnly: false,
+          includeFirstLastInstance: false,
+          includeDistance: false,
+          isSummary: true,
+          devices: [],
+          reportArgumentType: "ExceptionsByDevice",
+          includeDismissedEvents: false
+        },
+        userTimeZoneId: userTz,
+        groupBy: "Rule"
+      }];
+    });
+
+    // Batch into multiCall groups of 20
+    var BATCH_SIZE = 20;
+    var batches = [];
+    for (var i = 0; i < calls.length; i += BATCH_SIZE) {
+      batches.push(calls.slice(i, i + BATCH_SIZE));
+    }
+
+    var ruleIdSet = new Set(ruleIds);
+    var bucketsMap = {}; // key -> { seriesId -> count }
+    var totalEvents = 0;
+    var completedBatches = 0;
+    var totalBatches = batches.length;
+
+    return batches.reduce(function (chain, batch, batchIdx) {
+      return chain.then(function () {
+        if (isAborted()) return;
+        return apiMultiCall(batch).then(function (results) {
+          var batchStartIdx = batchIdx * BATCH_SIZE;
+          results.forEach(function (summaryRows, resultIdx) {
+            var bucketIdx = batchStartIdx + resultIdx;
+            if (bucketIdx >= buckets.length) return;
+            var key = buckets[bucketIdx].key;
+            if (!bucketsMap[key]) bucketsMap[key] = {};
+
+            if (!summaryRows || !Array.isArray(summaryRows)) return;
+
+            summaryRows.forEach(function (row) {
+              var ruleId = row.rule ? row.rule.id : null;
+              if (!ruleId || !ruleIdSet.has(ruleId)) return;
+              var count = row.count || 0;
+              totalEvents += count;
+
+              if (viewMode === "groups" && groupIds && groupIds.length) {
+                // Summary API returns company-wide counts per rule.
+                // Attribute the full count to each selected group.
+                groupIds.forEach(function (gid) {
+                  var compoundKey = gid + "::" + ruleId;
+                  if (!bucketsMap[key][compoundKey]) bucketsMap[key][compoundKey] = 0;
+                  bucketsMap[key][compoundKey] += count;
+                });
+              } else {
+                if (!bucketsMap[key][ruleId]) bucketsMap[key][ruleId] = 0;
+                bucketsMap[key][ruleId] += count;
+              }
+            });
+          });
+
+          completedBatches++;
+          if (onProgress) onProgress(completedBatches / totalBatches * 100);
+        });
+      });
+    }, Promise.resolve()).then(function () {
+      var orderedKeys = Object.keys(bucketsMap).sort();
+      return {
+        orderedKeys: orderedKeys,
+        buckets: bucketsMap,
+        uniqueDeviceCount: 0,
+        totalEvents: totalEvents,
+        usedSummaryApi: true
+      };
+    });
+  }
+
   // ─── Fetch Trip Mileage ───
 
   function fetchTripMileage(fromDate, toDate, granularity, groupIds) {
-    // Single fleet-wide API call using group-based deviceSearch.
+    // Chunked fleet-wide API calls with propertySelector for minimal payload.
     // Trip.distance is in km. We sum into { bucketKey: totalKm }.
+    var MAX_DAYS = 30;
+    var chunks = splitDateRange(fromDate, toDate, MAX_DAYS);
     var mileage = {};
     var tripCount = 0;
     var hasData = false;
 
-    return apiCall("Get", {
-      typeName: "Trip",
-      search: {
-        fromDate: toISODate(fromDate),
-        toDate: toISODate(toDate),
-        deviceSearch: {
-          groups: groupIds.map(function (id) { return { id: id }; })
+    var calls = chunks.map(function (chunk) {
+      return ["Get", {
+        typeName: "Trip",
+        search: {
+          fromDate: toISODate(chunk.from),
+          toDate: toISODate(chunk.to),
+          deviceSearch: {
+            groups: groupIds.map(function (id) { return { id: id }; })
+          }
+        },
+        propertySelector: {
+          fields: ["start", "distance"],
+          isIncluded: true
         }
-      }
-    }).then(function (trips) {
-      if (!trips || !trips.length) {
-        return { mileage: null, tripCount: 0 };
-      }
-      tripCount = trips.length;
-      trips.forEach(function (trip) {
-        if (!trip.start || typeof trip.distance !== "number" || trip.distance <= 0) return;
-        var key = getBucketKey(trip.start, granularity);
-        if (!mileage[key]) mileage[key] = 0;
-        mileage[key] += trip.distance;
-        hasData = true;
+      }];
+    });
+
+    // Execute all chunks in a single multiCall (or batched if many chunks)
+    var BATCH_SIZE = 20;
+    var batches = [];
+    for (var i = 0; i < calls.length; i += BATCH_SIZE) {
+      batches.push(calls.slice(i, i + BATCH_SIZE));
+    }
+
+    return batches.reduce(function (chain, batch) {
+      return chain.then(function () {
+        return apiMultiCall(batch).then(function (results) {
+          results.forEach(function (trips) {
+            if (!trips || !trips.length) return;
+            tripCount += trips.length;
+            trips.forEach(function (trip) {
+              if (!trip.start || typeof trip.distance !== "number" || trip.distance <= 0) return;
+              var key = getBucketKey(trip.start, granularity);
+              if (!mileage[key]) mileage[key] = 0;
+              mileage[key] += trip.distance;
+              hasData = true;
+            });
+          });
+        });
       });
+    }, Promise.resolve()).then(function () {
       return { mileage: hasData ? mileage : null, tripCount: tripCount };
     });
   }
@@ -1095,6 +1260,158 @@ geotab.addin.exceptionDashboard = function () {
 
   // ─── Generate (main flow) ───
 
+  function renderResults(agg, tripResult, selectedRules, selectedGroups, viewMode, granularity, fromDate, toDate) {
+    var ruleLabelMap = {};
+    allRules.forEach(function (r) { ruleLabelMap[r.id] = r.name; });
+    var groupLabelMap = {};
+    allGroups.forEach(function (g) { groupLabelMap[g.id] = g.name; });
+
+    var mileageByPeriod = tripResult.mileage;
+
+    // Build series metadata
+    var seriesMeta = [];
+    if (viewMode === "groups") {
+      selectedGroups.forEach(function (gid) {
+        var groupName = groupLabelMap[gid] || gid;
+        selectedRules.forEach(function (rid, rIdx) {
+          var ruleName = ruleLabelMap[rid] || rid;
+          seriesMeta.push({
+            id: gid + "::" + rid,
+            ruleId: rid,
+            label: groupName + " — " + ruleName,
+            groupLabel: groupName,
+            ruleLabel: ruleName,
+            stack: groupName,
+            colorIndex: rIdx
+          });
+        });
+      });
+    } else {
+      selectedRules.forEach(function (rid, idx) {
+        seriesMeta.push({
+          id: rid,
+          ruleId: rid,
+          label: ruleLabelMap[rid] || rid,
+          ruleLabel: ruleLabelMap[rid] || rid,
+          stack: "company",
+          colorIndex: idx
+        });
+      });
+    }
+
+    // Chart
+    var chartData = buildChartData(agg.orderedKeys, agg.buckets, granularity, seriesMeta, mileageByPeriod);
+    renderChart(chartData);
+
+    // Table
+    var tableData = buildTableRows(agg.orderedKeys, agg.buckets, granularity, seriesMeta, viewMode);
+    currentHeaders = tableData.headers;
+    currentRows = tableData.rows;
+    sortState = { col: "period", dir: "asc" };
+    renderTableHeaders();
+    renderTableBody();
+
+    // KPIs
+    renderKpis(agg, selectedRules.length, fromDate, toDate);
+
+    var statusParts = [agg.totalEvents.toLocaleString() + " events"];
+    if (agg.usedSummaryApi) statusParts.push("(summary API)");
+    if (tripResult.tripCount > 0) statusParts.push(tripResult.tripCount.toLocaleString() + " trips");
+    if (mileageByPeriod) statusParts.push("mileage \u2713");
+    setStatus("Loaded " + statusParts.join(", "));
+    els.emailBtn.disabled = false;
+  }
+
+  function generateWithSummaryApi(selectedRules, fromDate, toDate, granularity, viewMode, selectedGroups) {
+    return fetchExceptionSummary(
+      selectedRules, fromDate, toDate, granularity, selectedGroups, viewMode,
+      function (pct) {
+        setProgress(pct * 0.7);
+        els.loadingText.textContent = "Fetching summary... " + Math.round(pct * 0.7) + "%";
+      }
+    ).then(function (agg) {
+      if (isAborted()) return;
+
+      if (agg.totalEvents === 0) {
+        showLoading(false);
+        els.generateBtn.disabled = false;
+        els.emailBtn.disabled = true;
+        showEmpty(true);
+        els.kpiTotal.textContent = "0";
+        els.kpiDevices.textContent = "0";
+        els.kpiPeriod.textContent = formatDate(fromDate) + " to " + formatDate(toDate);
+        els.kpiRules.textContent = selectedRules.length;
+        if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+        els.tableHead.innerHTML = "";
+        els.tableBody.innerHTML = "";
+        currentRows = [];
+        return;
+      }
+
+      // Fetch trip mileage
+      var tripGroupIds = viewMode === "groups" ? selectedGroups : ["GroupCompanyId"];
+      els.loadingText.textContent = "Fetching trip mileage...";
+      setProgress(70);
+
+      return fetchTripMileage(fromDate, toDate, granularity, tripGroupIds).catch(function (err) {
+        console.warn("Trip mileage fetch failed (non-fatal):", err);
+        return { mileage: null, tripCount: 0 };
+      }).then(function (tripResult) {
+        if (isAborted()) return;
+        tripResult = tripResult || { mileage: null, tripCount: 0 };
+        showLoading(false);
+        els.generateBtn.disabled = false;
+        renderResults(agg, tripResult, selectedRules, selectedGroups, viewMode, granularity, fromDate, toDate);
+      });
+    });
+  }
+
+  function generateWithLegacyApi(selectedRules, fromDate, toDate, granularity, viewMode, selectedGroups) {
+    return fetchExceptionEvents(selectedRules, fromDate, toDate, function (pct) {
+      setProgress(pct * 0.7);
+      els.loadingText.textContent = "Fetching events... " + Math.round(pct * 0.7) + "%";
+    }).then(function (result) {
+      if (isAborted()) return;
+
+      if (result.hitLimit) {
+        showWarning("Warning: Some queries hit the 50,000 result limit. Results may be incomplete. Try a shorter date range.");
+      }
+
+      if (result.events.length === 0) {
+        showLoading(false);
+        els.generateBtn.disabled = false;
+        els.emailBtn.disabled = true;
+        showEmpty(true);
+        els.kpiTotal.textContent = "0";
+        els.kpiDevices.textContent = "0";
+        els.kpiPeriod.textContent = formatDate(fromDate) + " to " + formatDate(toDate);
+        els.kpiRules.textContent = selectedRules.length;
+        if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+        els.tableHead.innerHTML = "";
+        els.tableBody.innerHTML = "";
+        currentRows = [];
+        return;
+      }
+
+      var tripGroupIds = viewMode === "groups" ? selectedGroups : ["GroupCompanyId"];
+      els.loadingText.textContent = "Fetching trip mileage...";
+      setProgress(70);
+
+      return fetchTripMileage(fromDate, toDate, granularity, tripGroupIds).catch(function (err) {
+        console.warn("Trip mileage fetch failed (non-fatal):", err);
+        return { mileage: null, tripCount: 0 };
+      }).then(function (tripResult) {
+        if (isAborted()) return;
+        tripResult = tripResult || { mileage: null, tripCount: 0 };
+        showLoading(false);
+        els.generateBtn.disabled = false;
+
+        var agg = aggregateEvents(result.events, selectedRules, selectedGroups, granularity, viewMode);
+        renderResults(agg, tripResult, selectedRules, selectedGroups, viewMode, granularity, fromDate, toDate);
+      });
+    });
+  }
+
   function generate() {
     // Validate inputs
     var selectedRules = rulePicker.getSelected();
@@ -1136,123 +1453,28 @@ geotab.addin.exceptionDashboard = function () {
     // Reset UI
     showEmpty(false);
     showWarning(null);
-    showLoading(true, "Fetching exception events...");
+    showLoading(true, "Fetching exception summary...");
     setProgress(0);
     setStatus("");
     els.generateBtn.disabled = true;
 
-    // Step 1: Fetch exception events
-    fetchExceptionEvents(selectedRules, fromDate, toDate, function (pct) {
-      setProgress(pct * 0.7);
-      els.loadingText.textContent = "Fetching events... " + Math.round(pct * 0.7) + "%";
-    }).then(function (result) {
-      if (isAborted()) return;
-
-      if (result.hitLimit) {
-        showWarning("Warning: Some queries hit the 50,000 result limit. Results may be incomplete. Try a shorter date range.");
-      }
-
-      if (result.events.length === 0) {
-        showLoading(false);
-        els.generateBtn.disabled = false;
-        els.emailBtn.disabled = true;
-        showEmpty(true);
-        els.kpiTotal.textContent = "0";
-        els.kpiDevices.textContent = "0";
-        els.kpiPeriod.textContent = formatDate(fromDate) + " to " + formatDate(toDate);
-        els.kpiRules.textContent = selectedRules.length;
-        if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
-        els.tableHead.innerHTML = "";
-        els.tableBody.innerHTML = "";
-        currentRows = [];
-        return;
-      }
-
-      // Step 2: Fetch trip mileage via single fleet-wide call (non-fatal)
-      var tripGroupIds = viewMode === "groups" ? selectedGroups : ["GroupCompanyId"];
-      els.loadingText.textContent = "Fetching trip mileage...";
-      setProgress(70);
-
-      return fetchTripMileage(fromDate, toDate, granularity, tripGroupIds).catch(function (err) {
-        console.warn("Trip mileage fetch failed (non-fatal):", err);
-        return { mileage: null, tripCount: 0 };
-      }).then(function (tripResult) {
+    // Try optimized summary API first, fall back to legacy on error
+    generateWithSummaryApi(selectedRules, fromDate, toDate, granularity, viewMode, selectedGroups)
+      .catch(function (err) {
         if (isAborted()) return;
-        tripResult = tripResult || { mileage: null, tripCount: 0 };
+        console.warn("GetGroupedExceptionSummary failed, falling back to legacy Get ExceptionEvent:", err);
+        showWarning(null);
+        showLoading(true, "Fetching exception events (fallback)...");
+        setProgress(0);
+        return generateWithLegacyApi(selectedRules, fromDate, toDate, granularity, viewMode, selectedGroups);
+      })
+      .catch(function (err) {
+        if (isAborted()) return;
         showLoading(false);
         els.generateBtn.disabled = false;
-
-        // Build label lookups
-        var ruleLabelMap = {};
-        allRules.forEach(function (r) { ruleLabelMap[r.id] = r.name; });
-        var groupLabelMap = {};
-        allGroups.forEach(function (g) { groupLabelMap[g.id] = g.name; });
-
-        // Aggregate events
-        var agg = aggregateEvents(result.events, selectedRules, selectedGroups, granularity, viewMode);
-
-        // Trip mileage already aggregated by period during fetch
-        var mileageByPeriod = tripResult.mileage;
-
-        // Build series metadata
-        var seriesMeta = [];
-        if (viewMode === "groups") {
-          selectedGroups.forEach(function (gid) {
-            var groupName = groupLabelMap[gid] || gid;
-            selectedRules.forEach(function (rid, rIdx) {
-              var ruleName = ruleLabelMap[rid] || rid;
-              seriesMeta.push({
-                id: gid + "::" + rid,
-                ruleId: rid,
-                label: groupName + " — " + ruleName,
-                groupLabel: groupName,
-                ruleLabel: ruleName,
-                stack: groupName,
-                colorIndex: rIdx
-              });
-            });
-          });
-        } else {
-          selectedRules.forEach(function (rid, idx) {
-            seriesMeta.push({
-              id: rid,
-              ruleId: rid,
-              label: ruleLabelMap[rid] || rid,
-              ruleLabel: ruleLabelMap[rid] || rid,
-              stack: "company",
-              colorIndex: idx
-            });
-          });
-        }
-
-        // Chart (pass mileage for events/1k miles line)
-        var chartData = buildChartData(agg.orderedKeys, agg.buckets, granularity, seriesMeta, mileageByPeriod);
-        renderChart(chartData);
-
-        // Table
-        var tableData = buildTableRows(agg.orderedKeys, agg.buckets, granularity, seriesMeta, viewMode);
-        currentHeaders = tableData.headers;
-        currentRows = tableData.rows;
-        sortState = { col: "period", dir: "asc" };
-        renderTableHeaders();
-        renderTableBody();
-
-        // KPIs
-        renderKpis(agg, selectedRules.length, fromDate, toDate);
-
-        var statusParts = [result.events.length.toLocaleString() + " events"];
-        if (tripResult.tripCount > 0) statusParts.push(tripResult.tripCount.toLocaleString() + " trips");
-        if (mileageByPeriod) statusParts.push("mileage \u2713");
-        setStatus("Loaded " + statusParts.join(", "));
-        els.emailBtn.disabled = false;
-      }); // end trips .then
-    }).catch(function (err) {
-      if (isAborted()) return;
-      showLoading(false);
-      els.generateBtn.disabled = false;
-      setStatus("Error: " + (err.message || err));
-      console.error("generate error:", err);
-    });
+        setStatus("Error: " + (err.message || err));
+        console.error("generate error:", err);
+      });
   }
 
   // ─── Settings Panel ───
